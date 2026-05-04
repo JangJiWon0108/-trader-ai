@@ -11,6 +11,7 @@ from app.services.balance_service import (
     get_overseas_nccs,
     get_overseas_order_detail,
     get_overseas_order_resv_list,
+    get_merged_overseas_filled_orders,
     order_overseas_stock,
     create_conditional_orders,
 )
@@ -165,6 +166,16 @@ def get_current_price_route(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"현재체결가 조회 중 오류 발생: {str(e)}")
 
+@router.get("/order-fills", summary="해외주식 최근 체결(또는 체결분) 주문 내역")
+def read_order_fills(days: int = Query(30, ge=1, le=365, description="조회 기간(일)")):
+    """VTTS3035R/TTTS3035R 기반. 모의투자는 CCLD=00 후 서버에서 ft_ccld_qty>0 만 반환."""
+    try:
+        rows = get_merged_overseas_filled_orders(days=days)
+        return {"rt_cd": "0", "output": rows, "count": len(rows)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"체결 내역 조회 중 오류 발생: {str(e)}")
+
+
 @router.get("/nccs", summary="해외주식 미체결내역 조회 (모의투자 환경에서는 지원되지 않습니다.)")
 def get_overseas_nccs_route(
     ovrs_excg_cd: str = Query(..., description="거래소 코드 (예: NASD - 나스닥, NYSE - 뉴욕증권거래소)"),
@@ -196,7 +207,7 @@ def get_overseas_nccs_route(
                 "INQR_ST_DT": seven_days_ago.strftime("%Y%m%d"),
                 "INQR_END_DT": today.strftime("%Y%m%d"),
             }
-            result = get_overseas_order_detail(params)
+            result = get_overseas_order_detail(params, only_unfilled_pending=True)
         else:
             # 실전투자: 미체결내역 API 사용
             params = {

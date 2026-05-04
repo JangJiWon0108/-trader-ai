@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     SCHEDULE_AUTO_BUY_TIME: str = Field(default="00:00", description="자동 매수 실행 시간 (HH:MM, KST)")
     SCHEDULE_AUTO_SELL_INTERVAL_MIN: int = Field(default=1, description="자동 매도 체크 주기 (분)")
     SCHEDULE_ECONOMIC_UPDATE_TIME: str = Field(default="06:10", description="경제 데이터 수집 시간 (HH:MM, KST)")
+    SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE: bool = Field(
+        default=True,
+        description="매일 경제·주가 DB 갱신(스케줄) 직후, 신규 저장 행이 있으면 저장 모델로 추론·predicted_stocks 등 갱신",
+    )
 
     FRED_API_KEY: str = Field(default="", description="FRED API 키")
 

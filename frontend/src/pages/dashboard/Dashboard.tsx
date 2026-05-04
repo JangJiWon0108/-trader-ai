@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
 import Sparkline from '../../components/Sparkline'
@@ -7,10 +7,12 @@ import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
 import {
   fetchAllBalances,
-  fetchPredictions,
+  fetchCombinedRecommendations,
+  fetchOrderFills,
   fetchSchedulerStatus,
   type KisHolding,
-  type StockPrediction,
+  type OrderFillRow,
+  type CombinedRecommendation,
 } from '../../api'
 
 const cell: CSSProperties = {
@@ -43,21 +45,112 @@ function LoadingRow({ cols }: { cols: number }) {
   )
 }
 
-function getSignalColor(rec: string | null) {
-  if (!rec) return theme.onSurfaceVariant
-  const r = rec.toUpperCase()
-  if (r === 'BUY' || r === '매수') return theme.positive
-  if (r === 'SELL' || r === '매도') return theme.negative
-  return theme.onSurfaceVariant
+function nyTodayYmd() {
+  const t = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+  const [mm, dd, yy] = t.split('/')
+  return `${yy}${mm}${dd}`
+}
+
+function todayFilledCashflowUsd(rows: OrderFillRow[]): number {
+  const today = nyTodayYmd()
+  let usd = 0
+  for (const row of rows) {
+    if (row.ord_dt !== today) continue
+    const amt = parseFloat(row.ft_ccld_amt3 || '0')
+    if (isNaN(amt)) continue
+    if (row.sll_buy_dvsn_cd === '02') usd -= amt
+    else if (row.sll_buy_dvsn_cd === '01') usd += amt
+  }
+  return usd
+}
+
+function sortFillsDesc(rows: OrderFillRow[]): OrderFillRow[] {
+  return [...rows].sort((a, b) => {
+    const ka = `${a.ord_dt ?? ''}${a.ord_tmd ?? ''}`
+    const kb = `${b.ord_dt ?? ''}${b.ord_tmd ?? ''}`
+    return kb.localeCompare(ka)
+  })
+}
+
+function useCountdownMs(targetIso: string | null | undefined) {
+  const [ms, setMs] = useState<number | null>(null)
+  useEffect(() => {
+    if (!targetIso) {
+      setMs(null)
+      return
+    }
+    const t = () => {
+      const diff = new Date(targetIso).getTime() - Date.now()
+      setMs(diff > 0 ? diff : 0)
+    }
+    t()
+    const id = window.setInterval(t, 1000)
+    return () => window.clearInterval(id)
+  }, [targetIso])
+  return ms
+}
+
+function formatCountdown(totalMs: number | null) {
+  if (totalMs === null) return '—'
+  if (totalMs <= 0) return '곧'
+  const s = Math.floor(totalMs / 1000)
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  if (d > 0) return `${d}일 ${h}시간 ${m}분`
+  if (h > 0) return `${h}시간 ${m}분 ${sec}초`
+  if (m > 0) return `${m}분 ${sec}초`
+  return `${sec}초`
+}
+
+function StatusMini({ running, label }: { running: boolean; label: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: running ? theme.positive : theme.onSurfaceVariant,
+          boxShadow: running ? `0 0 8px ${theme.positive}` : 'none',
+        }}
+      />
+      <span style={{ fontSize: 12, fontWeight: 700, color: theme.onSurfaceVariant }}>{label}</span>
+      <span
+        style={{
+          marginLeft: 'auto',
+          fontSize: 11,
+          fontWeight: 800,
+          padding: '4px 10px',
+          borderRadius: 999,
+          color: running ? theme.positive : theme.negative,
+          background: running ? 'rgba(5,150,105,0.12)' : 'rgba(148,163,184,0.2)',
+        }}
+      >
+        {running ? '실행 중' : '정지'}
+      </span>
+    </div>
+  )
+}
+
+function scoreOf(r: CombinedRecommendation) {
+  return r.composite_score ?? r.rise_probability ?? r.accuracy ?? 0
 }
 
 export default function Dashboard() {
   const balance = useApi(fetchAllBalances)
-  const predictions = useApi(fetchPredictions)
+  const recommendations = useApi(fetchCombinedRecommendations)
   const scheduler = useApi(fetchSchedulerStatus)
+  const fills = useApi(() => fetchOrderFills(45))
 
-  // ── summary cards from balance ──────────────────────────────────
   const holdings: KisHolding[] = balance.data?.output1 ?? []
+  const cashUsd = balance.data?.cashUsdBestEffort ?? 0
 
   const totalCost = holdings.reduce((s, h) => s + parseFloat(h.frcr_buy_amt_smtl1 || '0'), 0)
   const totalEval = holdings.reduce((s, h) => {
@@ -67,165 +160,318 @@ export default function Dashboard() {
   }, 0)
   const totalPnl = totalEval - totalCost
   const totalPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
+  const totalAssets = totalEval + (cashUsd > 0 ? cashUsd : 0)
 
-  const preds: StockPrediction[] = predictions.data ?? []
+  const todayFlow = useMemo(() => todayFilledCashflowUsd(fills.data?.output ?? []), [fills.data])
+  const todayPct = totalAssets > 0 ? (todayFlow / totalAssets) * 100 : 0
 
-  const summaryCards = [
-    {
-      id: 'eval',
-      title: '총 평가 금액',
-      tip: '보유 종목 현재가 × 수량의 합계 (USD)',
-      value: balance.loading ? '로딩 중…' : `$${fmt(totalEval)}`,
-      changePct: totalPct,
-      spark: [0.4, 0.42, 0.45, 0.48, 0.5, 0.52, 0.55],
-    },
-    {
-      id: 'pnl',
-      title: '평가 손익',
-      tip: '현재 평가금액 - 매입금액. 아래 % 는 수익률',
-      value: balance.loading ? '로딩 중…' : `${totalPnl >= 0 ? '+' : ''}$${fmt(Math.abs(totalPnl))}`,
-      changePct: totalPct,
-      spark: [0.5, 0.52, 0.55, 0.53, 0.57, 0.6, 0.62],
-    },
-    {
-      id: 'holdings',
-      title: '보유 종목 수',
-      tip: '나스닥·NYSE·AMEX 전 거래소 보유 종목 합산',
-      value: balance.loading ? '로딩 중…' : `${holdings.length}개`,
-      changePct: 0,
-      spark: [0.6, 0.6, 0.6, 0.6, 0.61, 0.61, 0.62],
-    },
-  ]
+  const tickers = holdings.map((h) => h.ovrs_pdno).filter(Boolean)
+  const winStats = useMemo(() => {
+    const withQty = holdings.filter((h) => parseFloat(h.ovrs_cblc_qty || '0') > 0)
+    if (!withQty.length) return { rate: null as number | null, n: 0, w: 0 }
+    const w = withQty.filter((h) => parseFloat(h.evlu_pfls_rt || '0') > 0).length
+    return { rate: (w / withQty.length) * 100, n: withQty.length, w }
+  }, [holdings])
+
+  const topRecs = useMemo(() => {
+    const list = recommendations.data?.results ?? []
+    return [...list]
+      .sort((a, b) => scoreOf(b) - scoreOf(a))
+      .slice(0, 4)
+  }, [recommendations.data])
+
+  const fillRows = useMemo(() => sortFillsDesc(fills.data?.output ?? []).slice(0, 12), [fills.data])
+
+  const buyCd = useCountdownMs(scheduler.data?.buy_running ? scheduler.data?.next_auto_buy_at : null)
+  const sellCd = useCountdownMs(
+    scheduler.data?.sell_running && scheduler.data?.next_sell_check_at
+      ? scheduler.data.next_sell_check_at
+      : null,
+  )
+
+  const cardGrid: CSSProperties = {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+    gap: theme.gutter,
+    marginBottom: theme.gutter,
+  }
+
+  const sparkPos = totalPct >= 0
 
   return (
     <div style={{ padding: theme.pagePadding, fontFamily: theme.fontSans, minHeight: '100%' }}>
-      <PageHeader
-        title="대시보드"
-        subtitle={`US 시장 기준 · 스케줄러: 매수 ${scheduler.data?.buy_running ? '실행 중' : '중지'} / 매도 ${scheduler.data?.sell_running ? '실행 중' : '중지'}`}
-      />
+      <PageHeader title="대시보드" subtitle="US 시장 · 8개 요약 카드" />
 
-      {/* Summary cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: theme.gutter, marginBottom: theme.gutter }}>
-        {summaryCards.map((c) => (
-          <Card key={c.id} title={<Tooltip tip={c.tip}>{c.title}</Tooltip>}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-              <div>
-                <div style={{ fontSize: 24, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: theme.onSurface, fontFamily: theme.fontDisplay, letterSpacing: '-0.03em' }}>
-                  {c.value}
-                </div>
-                {c.changePct !== 0 && (
-                  <div style={{ marginTop: 8, fontSize: 13, fontWeight: 700, color: c.changePct >= 0 ? theme.positive : theme.negative }}>
-                    {fmtPct(c.changePct)}
-                  </div>
-                )}
+      <div style={cardGrid}>
+        <Card title={<Tooltip tip="보유 평가액 + 주문가능外화(거래소 응답 중 최댓값 추정)">총 자산 (USD)</Tooltip>}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+            <div>
+              <div
+                style={{
+                  fontSize: 24,
+                  fontWeight: 800,
+                  fontVariantNumeric: 'tabular-nums',
+                  color: theme.onSurface,
+                  fontFamily: theme.fontDisplay,
+                  letterSpacing: '-0.03em',
+                }}
+              >
+                {balance.loading ? '로딩 중…' : `$${fmt(totalAssets)}`}
               </div>
-              <Sparkline points={c.spark} positive={c.changePct === 0 ? undefined : c.changePct > 0} />
+              <div style={{ marginTop: 6, fontSize: 12, color: theme.onSurfaceVariant }}>
+                주식 평가 ${fmt(totalEval)}
+                {cashUsd > 0 ? ` · 추정 현금 $${fmt(cashUsd)}` : ''}
+              </div>
             </div>
-          </Card>
-        ))}
+            <Sparkline points={[0.42, 0.45, 0.48, 0.5, 0.52, 0.55, 0.58]} positive={sparkPos} />
+          </div>
+        </Card>
+
+        <Card
+          title={<Tooltip tip="미국 현지일 기준 당일 체결된 매수·매도의 외화 순현금흐름(참고 지표)">오늘의 손익 (USD/%)</Tooltip>}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+            <div>
+              <div
+                style={{
+                  fontSize: 24,
+                  fontWeight: 800,
+                  fontVariantNumeric: 'tabular-nums',
+                  color: todayFlow >= 0 ? theme.positive : theme.negative,
+                  fontFamily: theme.fontDisplay,
+                }}
+              >
+                {fills.loading ? '로딩 중…' : `${todayFlow >= 0 ? '+' : ''}$${fmt(Math.abs(todayFlow))}`}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 13, fontWeight: 700, color: todayPct >= 0 ? theme.positive : theme.negative }}>
+                {fills.loading ? '…' : fmtPct(todayPct)}
+              </div>
+            </div>
+            <Sparkline points={[0.55, 0.52, 0.58, 0.6, 0.57, 0.62, 0.65]} positive={todayFlow >= 0} />
+          </div>
+        </Card>
+
+        <Card title={<Tooltip tip="매입 대비 보유 종목 평가 손익률">총 수익률 (%)</Tooltip>}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+            <div>
+              <div
+                style={{
+                  fontSize: 28,
+                  fontWeight: 800,
+                  fontVariantNumeric: 'tabular-nums',
+                  color: totalPct >= 0 ? theme.positive : theme.negative,
+                  fontFamily: theme.fontDisplay,
+                }}
+              >
+                {balance.loading ? '…' : fmtPct(totalPct)}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: theme.onSurfaceVariant }}>
+                평가손익 {totalPnl >= 0 ? '+' : ''}${fmt(Math.abs(totalPnl))}
+              </div>
+            </div>
+            <Sparkline points={[0.5, 0.52, 0.51, 0.54, 0.56, 0.55, 0.58]} positive={sparkPos} />
+          </div>
+        </Card>
+
+        <Card
+          title={<Tooltip tip="자동매매 스케줄러 상태와 다음 매수(KST)·장중 매도 점검(뉴욕)까지 남은 시간">자동매매 + 다음 매매</Tooltip>}
+        >
+          {scheduler.loading && <div style={{ color: theme.onSurfaceVariant }}>로딩 중…</div>}
+          {scheduler.error && <div style={{ color: theme.negative }}>{scheduler.error}</div>}
+          {!scheduler.loading && !scheduler.error && scheduler.data && (
+            <>
+              <StatusMini running={scheduler.data.buy_running} label="매수 스케줄" />
+              <StatusMini running={scheduler.data.sell_running} label="매도 스케줄" />
+              <div style={{ fontSize: 12, color: theme.onSurfaceVariant, marginTop: 4, lineHeight: 1.5 }}>
+                <div>
+                  <strong style={{ color: theme.onSurface }}>다음 매수</strong>{' '}
+                  {scheduler.data.buy_running
+                    ? `(${scheduler.data.schedule_buy_time_kst ?? ''} KST 매일) ${formatCountdown(buyCd)}`
+                    : `예정 ${scheduler.data.next_auto_buy_at ? new Date(scheduler.data.next_auto_buy_at).toLocaleString('ko-KR') : '—'} · 정지 중`}
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  <strong style={{ color: theme.onSurface }}>다음 매도 점검</strong>{' '}
+                  {scheduler.data.sell_running
+                    ? `${scheduler.data.schedule_sell_interval_min ?? 1}분 간격 · ${formatCountdown(sellCd)}`
+                    : '정지 중 (장중에만 동작)'}
+                </div>
+              </div>
+            </>
+          )}
+        </Card>
+
+        <Card title={<Tooltip tip="나스닥·NYSE·AMEX 합산 보유 종목">보유 종목 수 + 티커</Tooltip>}>
+          <div style={{ fontSize: 22, fontWeight: 800, fontFamily: theme.fontDisplay, color: theme.onSurface }}>
+            {balance.loading ? '…' : `${holdings.length}개`}
+          </div>
+          <div
+            style={{
+              marginTop: 10,
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 6,
+              maxHeight: 88,
+              overflow: 'auto',
+            }}
+          >
+            {!balance.loading &&
+              tickers.map((t) => (
+                <span
+                  key={t}
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    padding: '4px 8px',
+                    borderRadius: 6,
+                    background: theme.surfaceContainer,
+                    color: theme.onSurface,
+                  }}
+                >
+                  {t}
+                </span>
+              ))}
+            {!balance.loading && tickers.length === 0 && (
+              <span style={{ fontSize: 12, color: theme.onSurfaceVariant }}>보유 없음</span>
+            )}
+          </div>
+        </Card>
+
+        <Card
+          title={<Tooltip tip="현재 보유 종목 중 평가손익률이 양수인 종목 비율(체결 매매 승률과는 다를 수 있음)">승률 (%)</Tooltip>}
+        >
+          <div
+            style={{
+              fontSize: 28,
+              fontWeight: 800,
+              fontVariantNumeric: 'tabular-nums',
+              color: theme.onSurface,
+              fontFamily: theme.fontDisplay,
+            }}
+          >
+            {balance.loading ? '…' : winStats.rate == null ? '—' : `${winStats.rate.toFixed(1)}%`}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 12, color: theme.onSurfaceVariant }}>
+            {winStats.n ? `${winStats.w} / ${winStats.n} 종목 수익 구간` : '보유 종목 없음'}
+          </div>
+        </Card>
+
+        <Card title={<Tooltip tip="복합 분석 추천 상위 종목">AI 추천 요약</Tooltip>}>
+          {recommendations.loading && <div style={{ color: theme.onSurfaceVariant }}>로딩 중…</div>}
+          {recommendations.error && <div style={{ color: theme.negative }}>{recommendations.error}</div>}
+          {!recommendations.loading && !recommendations.error && (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+              {topRecs.length === 0 && <li style={{ fontSize: 13, color: theme.onSurfaceVariant }}>추천 데이터 없음</li>}
+              {topRecs.map((r) => (
+                <li
+                  key={r.ticker}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '8px 0',
+                    borderBottom: `1px solid ${theme.surfaceContainer}`,
+                    fontSize: 13,
+                  }}
+                >
+                  <span style={{ fontWeight: 800 }}>{r.ticker}</span>
+                  <span style={{ color: theme.onSurfaceVariant, fontVariantNumeric: 'tabular-nums' }}>
+                    점수 {fmt(scoreOf(r), 1)} · {r.recommendation}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+
+        <Card title={<Tooltip tip="최근 체결된 주문(매수/매도)">최근 체결 피드</Tooltip>}>
+          {fills.loading && <div style={{ color: theme.onSurfaceVariant }}>로딩 중…</div>}
+          {fills.error && <div style={{ color: theme.negative }}>{fills.error}</div>}
+          {!fills.loading && !fills.error && (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: 160, overflow: 'auto' }}>
+              {fillRows.length === 0 && <li style={{ fontSize: 13, color: theme.onSurfaceVariant }}>체결 내역 없음</li>}
+              {fillRows.map((row, i) => {
+                const side = row.sll_buy_dvsn_cd === '02' ? '매수' : row.sll_buy_dvsn_cd === '01' ? '매도' : row.sll_buy_dvsn_cd_name || '—'
+                const c = row.sll_buy_dvsn_cd === '02' ? theme.positive : theme.negative
+                return (
+                  <li
+                    key={`${row.odno ?? i}-${row.ord_dt}-${row.pdno}`}
+                    style={{
+                      padding: '8px 0',
+                      borderBottom: `1px solid ${theme.surfaceContainer}`,
+                      fontSize: 12,
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    <span style={{ color: theme.onSurfaceVariant, marginRight: 8 }}>
+                      {row.ord_dt} {row.ord_tmd}
+                    </span>
+                    <span style={{ fontWeight: 800, color: c }}>{side}</span>{' '}
+                    <span style={{ fontWeight: 700 }}>{row.pdno}</span>
+                    <span style={{ color: theme.onSurfaceVariant }}>
+                      {' '}
+                      {row.ft_ccld_qty}주 @ ${fmt(row.ft_ccld_unpr3)}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </Card>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: theme.gutter }}>
-        {/* Holdings table */}
-        <Card title="보유 종목" subtitle="해외주식 잔고 · 나스닥/NYSE/AMEX">
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ color: theme.onSurfaceVariant, fontSize: 12 }}>
-                  {([
+      <Card title="보유 종목 상세" subtitle="해외주식 잔고 · 나스닥/NYSE/AMEX">
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ color: theme.onSurfaceVariant, fontSize: 12 }}>
+                {(
+                  [
                     ['티커', '', 'left'],
                     ['종목명', '', 'left'],
                     ['수량', '보유 주식 수 (주)', 'right'],
                     ['평단', '매입 평균 단가 (USD)', 'right'],
                     ['현재가', '현재 실시간 체결가 (USD)', 'right'],
                     ['손익', '(현재가 - 평단) / 평단 × 100', 'right'],
-                  ] as [string, string, string][]).map(([h, tip, align]) => (
-                    <th key={h} style={{ ...cell, fontWeight: 700, textAlign: align as 'left' | 'right' }}>
-                      {tip ? <Tooltip tip={tip} below>{h}</Tooltip> : h}
-                    </th>
-                  ))}
+                  ] as [string, string, string][]
+                ).map(([h, tip, align]) => (
+                  <th key={h} style={{ ...cell, fontWeight: 700, textAlign: align as 'left' | 'right' }}>
+                    {tip ? <Tooltip tip={tip} below>{h}</Tooltip> : h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {balance.loading && <LoadingRow cols={6} />}
+              {balance.error && (
+                <tr>
+                  <td colSpan={6} style={{ ...cell, color: theme.negative }}>잔고 조회 실패: {balance.error}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {balance.loading && <LoadingRow cols={6} />}
-                {balance.error && (
-                  <tr>
-                    <td colSpan={6} style={{ ...cell, color: theme.negative }}>잔고 조회 실패: {balance.error}</td>
-                  </tr>
-                )}
-                {!balance.loading && holdings.length === 0 && !balance.error && (
-                  <tr>
-                    <td colSpan={6} style={{ ...cell, color: theme.onSurfaceVariant }}>보유 종목 없음</td>
-                  </tr>
-                )}
-                {holdings.map((h) => {
-                  const pnlPct = parseFloat(h.evlu_pfls_rt || '0')
-                  const pnlAmt = parseFloat(h.frcr_evlu_pfls_amt || '0')
-                  return (
-                    <tr key={h.ovrs_pdno} style={{ color: theme.onSurface }}>
-                      <td style={{ ...cell, fontWeight: 700 }}>{h.ovrs_pdno}</td>
-                      <td style={{ ...cell, fontSize: 13, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.ovrs_item_name}</td>
-                      <td style={{ ...cell, textAlign: 'right' }}>{parseFloat(h.ovrs_cblc_qty || '0').toFixed(0)}</td>
-                      <td style={{ ...cell, textAlign: 'right' }}>${fmt(h.pchs_avg_pric)}</td>
-                      <td style={{ ...cell, textAlign: 'right' }}>${fmt(h.now_pric2)}</td>
-                      <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: pnlAmt >= 0 ? theme.positive : theme.negative }}>
-                        {fmtPct(pnlPct)}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-
-        {/* AI Predictions feed */}
-        <Card title="AI 예측 종목" subtitle="상승 확률 상위 · 실제 모델 결과">
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {predictions.loading && (
-              <li style={{ padding: '14px 0', color: theme.onSurfaceVariant }}>로딩 중…</li>
-            )}
-            {predictions.error && (
-              <li style={{ padding: '14px 0', color: theme.negative }}>오류: {predictions.error}</li>
-            )}
-            {preds
-              .filter((p) => p.rise_probability != null)
-              .sort((a, b) => (b.rise_probability ?? 0) - (a.rise_probability ?? 0))
-              .slice(0, 8)
-              .map((p) => {
-                const rec = p.recommendation ?? ''
+              )}
+              {!balance.loading && holdings.length === 0 && !balance.error && (
+                <tr>
+                  <td colSpan={6} style={{ ...cell, color: theme.onSurfaceVariant }}>보유 종목 없음</td>
+                </tr>
+              )}
+              {holdings.map((h) => {
+                const pnlPct = parseFloat(h.evlu_pfls_rt || '0')
+                const pnlAmt = parseFloat(h.frcr_evlu_pfls_amt || '0')
                 return (
-                  <li
-                    key={p.stock}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: '1fr auto',
-                      gap: 8,
-                      padding: '12px 10px',
-                      borderBottom: `1px solid ${theme.surfaceContainer}`,
-                      alignItems: 'center',
-                    }}
-                  >
-                    <div>
-                      <span style={{ fontWeight: 700, fontSize: 14, color: theme.onSurface }}>{p.stock}</span>
-                      <span style={{ marginLeft: 8, fontSize: 12, color: theme.onSurfaceVariant }}>
-                        현재 ${fmt(p.last_price)} → 예측 ${fmt(p.predicted_price)}
-                      </span>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 700, fontSize: 13, color: getSignalColor(rec) }}>
-                        <Tooltip tip="LSTM 모델의 매수·매도·보유 판단">{rec}</Tooltip>
-                      </div>
-                      <div style={{ fontSize: 12, color: theme.onSurfaceVariant }}>
-                        <Tooltip tip="AI 모델이 예측한 내일 주가 상승 확률">상승확률 {fmt(p.rise_probability, 1)}%</Tooltip>
-                      </div>
-                    </div>
-                  </li>
+                  <tr key={h.ovrs_pdno} style={{ color: theme.onSurface }}>
+                    <td style={{ ...cell, fontWeight: 700 }}>{h.ovrs_pdno}</td>
+                    <td style={{ ...cell, fontSize: 13, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.ovrs_item_name}</td>
+                    <td style={{ ...cell, textAlign: 'right' }}>{parseFloat(h.ovrs_cblc_qty || '0').toFixed(0)}</td>
+                    <td style={{ ...cell, textAlign: 'right' }}>${fmt(h.pchs_avg_pric)}</td>
+                    <td style={{ ...cell, textAlign: 'right' }}>${fmt(h.now_pric2)}</td>
+                    <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: pnlAmt >= 0 ? theme.positive : theme.negative }}>
+                      {fmtPct(pnlPct)}
+                    </td>
+                  </tr>
                 )
               })}
-          </ul>
-        </Card>
-      </div>
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   )
 }

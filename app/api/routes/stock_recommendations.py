@@ -1,6 +1,14 @@
 from fastapi import APIRouter, HTTPException
 from app.services.stock_recommendation_service import StockRecommendationService
-from app.utils.scheduler import run_auto_buy_now, start_scheduler, stop_scheduler, stock_scheduler, run_auto_sell_now, start_sell_scheduler, stop_sell_scheduler, get_scheduler_status
+from app.utils.scheduler import (
+    run_auto_buy_now,
+    start_scheduler,
+    stop_scheduler,
+    run_auto_sell_now,
+    start_sell_scheduler,
+    stop_sell_scheduler,
+    get_scheduler_status,
+)
 
 router = APIRouter()
 service = StockRecommendationService()
@@ -198,24 +206,12 @@ async def stop_auto_purchase_scheduler():
         raise HTTPException(status_code=500, detail=f"스케줄러 중지 중 오류 발생: {str(e)}")
 
 @router.get("/scheduler/status", response_model=dict)
-async def get_scheduler_status():
+async def read_scheduler_status():
     """
-    자동 매수/매도 스케줄러의 현재 상태를 반환합니다.
-    
-    반환값:
-    - buy_running: 매수 스케줄러 실행 중 여부 (true/false)
-    - sell_running: 매도 스케줄러 실행 중 여부 (true/false)
+    자동 매수/매도 스케줄러 상태, 다음 자동 매수 예정(KST), 장중 다음 매도 점검(UTC ISO)을 반환합니다.
     """
     try:
-        # 스케줄러 인스턴스에서 직접 상태 가져오기
-        buy_running = stock_scheduler.running
-        sell_running = stock_scheduler.sell_running
-        
-        return {
-            "buy_running": buy_running,
-            "sell_running": sell_running,
-            "message": f"매수 스케줄러: {'실행 중' if buy_running else '중지됨'}, 매도 스케줄러: {'실행 중' if sell_running else '중지됨'}"
-        }
+        return get_scheduler_status()
     except Exception as e:
         print(f"스케줄러 상태 확인 중 오류 발생: {str(e)}")
         import traceback

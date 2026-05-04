@@ -7569,3 +7569,136 @@ RuntimeError: asyncio.run() cannot be called from a running event loop
 2026-05-04 16:51:02,831 - stock_scheduler - INFO - 현재 시간 2026-05-04 16:51:02 (뉴욕: 2026-05-04 03:51:02)은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다.
 2026-05-04 16:51:02,831 - stock_scheduler - INFO - 자동 매도 작업 완료
 2026-05-04 16:51:02,831 - stock_scheduler - INFO - 자동 매도 작업 완료
+2026-05-04 16:51:28,730 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:51:28,918 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:51:28,928 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:51:34,485 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:51:34,489 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:51:34,489 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:51:34,489 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:52:35,232 - stock_scheduler - INFO - 자동 매도 작업 시작
+2026-05-04 16:52:35,237 - stock_scheduler - INFO - 자동 매도 작업 시작
+2026-05-04 16:52:35,371 - stock_scheduler - INFO - 현재 시간 2026-05-04 16:52:35 (뉴욕: 2026-05-04 03:52:35)은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다.
+2026-05-04 16:52:35,371 - stock_scheduler - INFO - 현재 시간 2026-05-04 16:52:35 (뉴욕: 2026-05-04 03:52:35)은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다.
+2026-05-04 16:52:35,371 - stock_scheduler - INFO - 자동 매도 작업 완료
+2026-05-04 16:52:35,371 - stock_scheduler - INFO - 자동 매도 작업 완료
+2026-05-04 16:53:35,573 - stock_scheduler - INFO - 자동 매도 작업 시작
+2026-05-04 16:53:35,578 - stock_scheduler - INFO - 현재 시간 2026-05-04 16:53:35 (뉴욕: 2026-05-04 03:53:35)은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다.
+2026-05-04 16:53:35,578 - stock_scheduler - INFO - 자동 매도 작업 완료
+2026-05-04 16:54:35,656 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:54:35,790 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:54:36,785 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:54:40,043 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:54:40,047 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:54:40,047 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:54:40,047 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:55:17,535 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:55:18,168 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:55:18,171 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:55:23,025 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:55:23,030 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:55:23,031 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:55:23,031 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:55:28,138 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:55:29,051 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:55:30,053 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:55:32,338 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:55:32,339 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:55:32,339 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:55:32,339 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:55:37,454 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:55:38,359 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:55:38,361 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:55:40,869 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:55:40,871 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:55:40,871 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:55:40,871 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:55:45,977 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:55:46,898 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:55:47,902 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:55:50,524 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:55:50,526 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:55:50,526 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:55:50,526 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:55:55,635 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:55:56,551 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:55:57,549 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:56:00,284 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:56:00,287 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:56:00,287 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:56:00,287 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:56:05,392 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:56:06,310 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:56:07,315 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:56:09,566 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:56:09,568 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:56:09,568 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:56:09,568 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:57:09,746 - stock_scheduler - INFO - 자동 매도 작업 시작
+2026-05-04 16:57:09,768 - stock_scheduler - INFO - 자동 매도 작업 시작
+2026-05-04 16:57:09,891 - stock_scheduler - INFO - 현재 시간 2026-05-04 16:57:09 (뉴욕: 2026-05-04 03:57:09)은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다.
+2026-05-04 16:57:09,892 - stock_scheduler - INFO - 자동 매도 작업 완료
+2026-05-04 16:57:09,892 - stock_scheduler - INFO - 현재 시간 2026-05-04 16:57:09 (뉴욕: 2026-05-04 03:57:09)은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다.
+2026-05-04 16:57:09,892 - stock_scheduler - INFO - 자동 매도 작업 완료
+2026-05-04 16:57:18,208 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:57:18,913 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:57:18,923 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:57:23,509 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:57:23,532 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:57:23,536 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:57:23,536 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:57:28,648 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:57:29,554 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:57:29,557 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:57:31,877 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:57:31,879 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:57:31,879 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:57:31,880 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:57:37,005 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:57:37,902 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:57:37,903 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:57:40,098 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:57:40,102 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:57:40,102 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:57:40,102 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:57:46,120 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:57:46,122 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:57:47,123 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:57:49,435 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:57:49,436 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.
+2026-05-04 16:57:49,437 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:57:49,437 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:58:08,440 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:58:08,777 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:58:09,831 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:58:13,530 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:58:13,534 - economic_scheduler - INFO - 경제 데이터 스케줄러 시작 (KST 06:10, 추론 후행: True)
+2026-05-04 16:58:13,534 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:58:13,536 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:58:18,652 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:58:19,548 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:58:19,552 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:58:22,576 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:58:22,608 - economic_scheduler - INFO - 경제 데이터 스케줄러 시작 (KST 06:10, 추론 후행: True)
+2026-05-04 16:58:22,608 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:58:22,608 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:58:27,722 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 16:58:28,637 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 16:58:29,646 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 16:58:35,821 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 16:58:35,825 - economic_scheduler - INFO - 경제 데이터 스케줄러 시작 (KST 06:10, 추론 후행: True)
+2026-05-04 16:58:35,826 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 16:58:35,826 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.
+2026-05-04 16:59:36,116 - stock_scheduler - INFO - 자동 매도 작업 시작
+2026-05-04 16:59:36,119 - stock_scheduler - INFO - 자동 매도 작업 시작
+2026-05-04 16:59:36,251 - stock_scheduler - INFO - 현재 시간 2026-05-04 16:59:36 (뉴욕: 2026-05-04 03:59:36)은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다.
+2026-05-04 16:59:36,252 - stock_scheduler - INFO - 현재 시간 2026-05-04 16:59:36 (뉴욕: 2026-05-04 03:59:36)은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다.
+2026-05-04 16:59:36,252 - stock_scheduler - INFO - 자동 매도 작업 완료
+2026-05-04 16:59:36,252 - stock_scheduler - INFO - 자동 매도 작업 완료
+2026-05-04 17:00:15,913 - stock_scheduler - INFO - 매수 스케줄러가 중지되었습니다.
+2026-05-04 17:00:16,393 - stock_scheduler - INFO - 매도 스케줄러가 중지되었습니다.
+2026-05-04 17:00:17,379 - economic_scheduler - INFO - 경제 데이터 업데이트 스케줄러가 중지되었습니다.
+2026-05-04 17:00:21,035 - httpx - INFO - HTTP Request: GET https://cubyfztyjnyqbsiemhay.supabase.co/rest/v1/economic_and_stock_data?select=%EB%82%A0%EC%A7%9C&order=%EB%82%A0%EC%A7%9C.desc&limit=1 "HTTP/2 200 OK"
+2026-05-04 17:00:21,040 - economic_scheduler - INFO - 경제 데이터 스케줄러 시작 (KST 06:10, 추론 후행: True)
+2026-05-04 17:00:21,041 - stock_scheduler - INFO - 주식 자동매매 스케줄러가 시작되었습니다. 한국 시간 밤 12시(00:00)에 매수 작업이 실행됩니다.
+2026-05-04 17:00:21,041 - stock_scheduler - INFO - 매도 스케줄러가 시작되었습니다. 1분마다 매도 대상을 확인합니다.

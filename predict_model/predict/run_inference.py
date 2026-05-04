@@ -3,9 +3,9 @@
 
   uv run python predict_model/predict/run_inference.py
 
-모델 경로: .env 의 PREDICT_MODEL_DIR (프로젝트 루트 기준 상대 또는 절대경로).
+모델 경로: .env 의 PREDICT_MODEL_DIR → app.core.config.settings.predict_model_path 와 동일.
   예: PREDICT_MODEL_DIR=predict_model/model/v2_260510
-  CLI --model-dir 가 있으면 이 값보다 우선합니다.
+  CLI --model-dir 가 있으면 env 보다 우선합니다.
 
 환경 변수: SUPABASE_URL, SUPABASE_SERVICE_KEY(권장) 또는 SUPABASE_KEY
 """
@@ -55,11 +55,9 @@ def get_supabase() -> Client:
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
     if not url or not key:
-        print(
-            "SUPABASE_URL 및 SUPABASE_SERVICE_KEY(또는 SUPABASE_KEY)를 .env에 설정하세요.",
-            file=sys.stderr,
+        raise RuntimeError(
+            "SUPABASE_URL 및 SUPABASE_SERVICE_KEY(또는 SUPABASE_KEY)를 .env에 설정하세요."
         )
-        sys.exit(1)
     return create_client(url, key)
 
 
@@ -337,13 +335,23 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> None:
-    _load_env()
-    args = parse_args()
-    model_dir = resolve_model_dir(args.model_dir)
-    print(f"MODEL_DIR = {model_dir}")
+def run_inference_and_save_to_db(
+    model_dir: Path | None = None,
+    *,
+    write_db: bool = True,
+) -> dict:
+    """
+    저장된 모델(PREDICT_MODEL_DIR)로 추론 후 DB 갱신.
+    스케줄러(경제 데이터 갱신 직후)에서 호출한다.
 
-    model, stock_scaler, econ_scaler, meta = load_model_dir(model_dir)
+    Returns:
+        success, model_dir, prediction_rows, analysis_rows (write_db 시), write_db
+    """
+    _load_env()
+    resolved = resolve_model_dir(model_dir)
+    print(f"MODEL_DIR = {resolved}")
+
+    model, stock_scaler, econ_scaler, meta = load_model_dir(resolved)
     target_columns = meta["target_columns"]
     economic_features = meta["economic_features"]
     lookback = int(meta["lookback"])
@@ -365,10 +373,15 @@ def main() -> None:
         forecast_horizon,
     )
 
-    if args.no_db:
+    if not write_db:
         print(result_data.tail(5).to_string())
         print("\n(--no-db: DB 저장 생략)")
-        return
+        return {
+            "success": True,
+            "write_db": False,
+            "model_dir": str(resolved),
+            "prediction_rows": len(result_data),
+        }
 
     save_predictions_to_db(supabase, result_data)
 
@@ -377,6 +390,23 @@ def main() -> None:
     save_analysis_to_db(supabase, final)
     print("\n=== 완료: predicted_stocks + stock_analysis_results 갱신 ===")
     print(final.head(10).to_string(index=False))
+    return {
+        "success": True,
+        "write_db": True,
+        "model_dir": str(resolved),
+        "prediction_rows": len(result_data),
+        "analysis_rows": len(final),
+    }
+
+
+def main() -> None:
+    _load_env()
+    args = parse_args()
+    try:
+        run_inference_and_save_to_db(args.model_dir, write_db=not args.no_db)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -421,8 +421,24 @@ def get_overseas_nccs(params):
         print(f"미체결내역 조회 중 오류 발생: {str(e)}")
         raise
 
-def get_overseas_order_detail(params):
-    """해외주식 주문체결내역 조회 (모의투자용 대체 API)"""
+def _normalize_order_inquiry_output(result: dict) -> dict:
+    """inquire-order 응답 output 을 항상 list[dict] 로 맞춘다."""
+    out = result.get("output")
+    if out is None:
+        result["output"] = []
+    elif isinstance(out, dict):
+        result["output"] = [out]
+    elif not isinstance(out, list):
+        result["output"] = []
+    return result
+
+
+def get_overseas_order_detail(params, *, only_unfilled_pending: bool = False):
+    """해외주식 주문·체결 조회 (VTTS3035R / TTTS3035R).
+
+    only_unfilled_pending=True 이면 미체결 잔량(nccs_qty)이 있는 행만 남긴다 (미체결 화면용).
+    False 이면 필터 없이 정규화된 리스트를 반환한다 (체결 피드·당일 손익 집계용).
+    """
     try:
         access_token = get_access_token()
         
@@ -437,19 +453,15 @@ def get_overseas_order_detail(params):
             "tr_id": tr_id,
         }
         
-        # 디버깅 정보
         print(f"API 요청: {url}")
-        print(f"헤더: {headers}")
         print(f"파라미터: {params}")
         
         response = requests.get(url, headers=headers, params=params)
         
-        # 응답 확인
         print(f"API 응답 상태 코드: {response.status_code}")
         print(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
         
         if response.status_code == 404:
-            # 404 오류인 경우 빈 결과 반환
             return {
                 "rt_cd": "0",
                 "msg_cd": "NODATA",
@@ -467,12 +479,16 @@ def get_overseas_order_detail(params):
         
         try:
             result = response.json()
-            # 정상적인 결과 처리
-            if 'output' in result and isinstance(result['output'], list):
-                result['output'] = [item for item in result['output'] if int(item.get('nccs_qty', 0)) > 0]
+            result = _normalize_order_inquiry_output(result)
+            if only_unfilled_pending and isinstance(result.get("output"), list):
+                def _nq(item):
+                    try:
+                        return int(float(str(item.get("nccs_qty", "0") or "0")))
+                    except (TypeError, ValueError):
+                        return 0
+                result["output"] = [item for item in result["output"] if _nq(item) > 0]
             return result
         except ValueError:
-            # JSON 파싱 오류 시 빈 결과 반환
             return {
                 "rt_cd": "0",
                 "msg_cd": "PARSEERR",
@@ -481,13 +497,77 @@ def get_overseas_order_detail(params):
             }
     except Exception as e:
         print(f"주문체결내역 조회 중 오류 발생: {str(e)}")
-        # 예외 발생 시 빈 결과 반환
         return {
             "rt_cd": "0", 
             "msg_cd": "ERROR",
             "msg1": f"API 호출 오류: {str(e)}",
             "output": []
         }
+
+
+def fetch_overseas_orders_for_period(ord_strt_dt: str, ord_end_dt: str, ovrs_excg_cd: str | None) -> dict:
+    """해외주식 주문·체결 조회 (공식 ORD_STRT_DT / ORD_END_DT 파라미터)."""
+    is_mock = settings.KIS_USE_MOCK
+    ovrs = "" if is_mock else (ovrs_excg_cd or "NASD")
+    params = {
+        "CANO": settings.KIS_CANO,
+        "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+        "PDNO": "" if is_mock else "%",
+        "ORD_STRT_DT": ord_strt_dt,
+        "ORD_END_DT": ord_end_dt,
+        "SLL_BUY_DVSN": "00",
+        "CCLD_NCCS_DVSN": "00" if is_mock else "01",
+        "OVRS_EXCG_CD": ovrs,
+        "SORT_SQN": "AS",
+        "ORD_DT": "",
+        "ORD_GNO_BRNO": "00000",
+        "ODNO": "",
+        "CTX_AREA_FK200": "",
+        "CTX_AREA_NK200": "",
+    }
+    return get_overseas_order_detail(params, only_unfilled_pending=False)
+
+
+def get_merged_overseas_filled_orders(days: int = 30) -> list[dict]:
+    """최근 days 일간 체결(또는 모의: 전체 후 ft_ccld_qty 필터) 주문 행을 거래소별로 합친다."""
+    end = datetime.now()
+    start = end - timedelta(days=max(1, days))
+    end_s = end.strftime("%Y%m%d")
+    start_s = start.strftime("%Y%m%d")
+    merged: list[dict] = []
+    seen: set[tuple] = set()
+
+    if settings.KIS_USE_MOCK:
+        res = fetch_overseas_orders_for_period(start_s, end_s, "")
+        if res.get("rt_cd") == "0" and isinstance(res.get("output"), list):
+            merged.extend(res["output"])
+    else:
+        for ex in ("NASD", "NYSE", "AMEX"):
+            res = fetch_overseas_orders_for_period(start_s, end_s, ex)
+            if res.get("rt_cd") == "0" and isinstance(res.get("output"), list):
+                merged.extend(res["output"])
+            time.sleep(0.25)
+
+    filled: list[dict] = []
+    for item in merged:
+        try:
+            ccld = float(str(item.get("ft_ccld_qty", "0") or "0"))
+        except (TypeError, ValueError):
+            ccld = 0.0
+        if ccld <= 0:
+            continue
+        key = (
+            str(item.get("odno", "")),
+            str(item.get("ord_dt", "")),
+            str(item.get("pdno", "")),
+            str(item.get("sll_buy_dvsn_cd", "")),
+            str(item.get("ft_ccld_qty", "")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        filled.append(item)
+    return filled
 
 def get_overseas_order_resv_list(params):
     """해외주식 예약주문 조회"""

@@ -3,10 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from app.api.api import api_router
 from app.services.economic_service import update_economic_data_in_background
+from app.core.config import settings
 from app.utils.scheduler import (
-    start_scheduler, stop_scheduler, 
+    start_scheduler, stop_scheduler,
     start_sell_scheduler, stop_sell_scheduler,
-    start_economic_data_scheduler, stop_economic_data_scheduler
+    start_economic_data_scheduler, stop_economic_data_scheduler,
 )
 from contextlib import asynccontextmanager
 
@@ -50,7 +51,7 @@ async def startup():
     # 주식 자동매매 스케줄러 시작
     start_scheduler()
     start_sell_scheduler()
-    print("경제 데이터 업데이트 스케줄러가 시작되었습니다. (매일 한국시간 새벽 6시 5분)")
+    print(f"경제 데이터 스케줄러 시작 (KST {settings.SCHEDULE_ECONOMIC_UPDATE_TIME})")
     print("주식 자동매매 스케줄러가 시작되었습니다.")
     print("주식 자동매도 스케줄러가 시작되었습니다.")
 

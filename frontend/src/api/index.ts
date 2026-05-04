@@ -39,7 +39,12 @@ export interface KisOverseasBalance {
     tot_pftrt?: string
     evlu_amt_smtl?: string
     frcr_evlu_amt?: string
+    frcr_ord_psbl_amt1?: string
+    ovrs_ord_psbl_amt?: string
+    ord_psbl_frcr_amt?: string
   }
+  /** fetchAllBalances: 거래소별 output2 중 주문가능外화 추정 최댓값 */
+  cashUsdBestEffort?: number
 }
 
 export const fetchOverseasBalance = (exchange = 'NASD') =>
@@ -51,13 +56,21 @@ export async function fetchAllBalances(): Promise<KisOverseasBalance> {
   const results = await Promise.allSettled(exchanges.map(fetchOverseasBalance))
   const allHoldings: KisHolding[] = []
   let summary: KisOverseasBalance['output2'] = {}
+  let cashUsdBestEffort = 0
   for (const r of results) {
     if (r.status === 'fulfilled' && r.value.rt_cd === '0') {
       allHoldings.push(...(r.value.output1 ?? []))
       if (r.value.output2) summary = r.value.output2
+      const o2 = r.value.output2 as Record<string, string | undefined> | undefined
+      if (o2) {
+        for (const k of ['frcr_ord_psbl_amt1', 'ovrs_ord_psbl_amt', 'ord_psbl_frcr_amt'] as const) {
+          const v = parseFloat(o2[k] || '')
+          if (!isNaN(v) && v > cashUsdBestEffort) cashUsdBestEffort = v
+        }
+      }
     }
   }
-  return { rt_cd: '0', output1: allHoldings, output2: summary }
+  return { rt_cd: '0', output1: allHoldings, output2: summary, cashUsdBestEffort }
 }
 
 // ── Stocks / AI predictions ────────────────────────────────────────
@@ -117,7 +130,38 @@ export interface SchedulerStatus {
   buy_running: boolean
   sell_running: boolean
   message: string
+  schedule_buy_time_kst?: string
+  schedule_sell_interval_min?: number
+  /** 다음 자동 매수 예정 (KST, ISO8601) */
+  next_auto_buy_at?: string
+  /** 장중 매도 점검 다음 분(UTC ISO). 장외·매도 중지 시 null */
+  next_sell_check_at?: string | null
 }
+
+export interface OrderFillRow {
+  odno?: string
+  ord_dt?: string
+  ord_tmd?: string
+  pdno?: string
+  prdt_name?: string
+  sll_buy_dvsn_cd?: string
+  sll_buy_dvsn_cd_name?: string
+  ft_ccld_qty?: string
+  ft_ccld_unpr3?: string
+  ft_ccld_amt3?: string
+  ovrs_excg_cd?: string
+  prcs_stat_name?: string
+  [key: string]: string | undefined
+}
+
+export interface OrderFillsResponse {
+  rt_cd: string
+  output: OrderFillRow[]
+  count: number
+}
+
+export const fetchOrderFills = (days = 30) =>
+  get<OrderFillsResponse>(`/balance/order-fills?days=${days}`)
 
 export const fetchSchedulerStatus = () =>
   get<SchedulerStatus>('/stocks/recommendations/scheduler/status')

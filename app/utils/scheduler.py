@@ -392,11 +392,55 @@ def stop_sell_scheduler():
     """매도 스케줄러 중지 함수"""
     return stock_scheduler.stop_sell_scheduler()
 
+def _next_kst_daily_run_iso(hhmm: str) -> str:
+    """설정된 KST 시각의 다음 발생 시각을 ISO8601 로 반환."""
+    kst = pytz.timezone("Asia/Seoul")
+    now = datetime.now(kst)
+    parts = (hhmm or "00:00").strip().split(":")
+    h = int(parts[0])
+    m = int(parts[1]) if len(parts) > 1 else 0
+    target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target.isoformat()
+
+
+def _next_sell_check_iso() -> str | None:
+    """매도 스케줄러가 장중 점검할 때까지 남은 시간 기준 다음 분(뉴욕) — 장외면 None."""
+    ny = pytz.timezone("America/New_York")
+    now_ny = datetime.now(ny)
+    wd = now_ny.weekday()
+    if wd > 4:
+        return None
+    hm = now_ny.hour * 60 + now_ny.minute
+    open_m = 9 * 60 + 30
+    close_m = 16 * 60
+    if hm < open_m or hm >= close_m:
+        return None
+    nxt = (now_ny.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    if nxt.hour == 16 and nxt.minute > 0:
+        return None
+    return nxt.astimezone(pytz.UTC).isoformat()
+
+
 def get_scheduler_status():
-    """스케줄러 상태 확인"""
+    """스케줄러 상태·다음 매수 시각(KST)·다음 매도 점검 시각(뉴욕 장중)"""
+    buy_running = stock_scheduler.running
+    sell_running = stock_scheduler.sell_running
+    next_buy_at = _next_kst_daily_run_iso(settings.SCHEDULE_AUTO_BUY_TIME)
+    next_sell_at = _next_sell_check_iso() if sell_running else None
+    msg = (
+        f"매수 스케줄러: {'실행 중' if buy_running else '중지됨'}, "
+        f"매도 스케줄러: {'실행 중' if sell_running else '중지됨'}"
+    )
     return {
-        "buy_running": stock_scheduler.running,
-        "sell_running": stock_scheduler.sell_running
+        "buy_running": buy_running,
+        "sell_running": sell_running,
+        "message": msg,
+        "schedule_buy_time_kst": settings.SCHEDULE_AUTO_BUY_TIME,
+        "schedule_sell_interval_min": settings.SCHEDULE_AUTO_SELL_INTERVAL_MIN,
+        "next_auto_buy_at": next_buy_at,
+        "next_sell_check_at": next_sell_at,
     }
 
 def run_auto_buy_now():
@@ -412,16 +456,38 @@ economic_data_scheduler_running = False
 economic_data_scheduler_thread = None
 
 def _run_economic_data_update():
-    """경제 데이터 업데이트 실행 함수"""
+    """경제·주가 DB 갱신 후, 신규 행이 있으면 저장 모델로 추론·예측 테이블 갱신."""
+    elog = logging.getLogger("economic_scheduler")
     try:
-        logger = logging.getLogger('economic_scheduler')
-        logger.info("경제 데이터 업데이트 작업 시작")
-        asyncio.run(update_economic_data_in_background())
-        logger.info("경제 데이터 업데이트 작업 완료")
+        elog.info("경제 데이터 업데이트 작업 시작")
+        result = asyncio.run(update_economic_data_in_background())
+        elog.info("경제 데이터 업데이트 작업 완료: %s", result)
+
+        updated = int((result or {}).get("updated_records") or 0)
+        if (
+            settings.SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE
+            and isinstance(result, dict)
+            and result.get("success")
+            and updated > 0
+        ):
+            elog.info("신규 저장 행 %s건 → 모델 추론 및 predicted_stocks / stock_analysis_results 갱신", updated)
+            try:
+                from predict_model.predict.run_inference import run_inference_and_save_to_db
+
+                inf = run_inference_and_save_to_db()
+                elog.info("추론·DB 갱신 완료: %s", inf)
+            except Exception as inf_e:
+                elog.error(
+                    "추론·DB 갱신 실패(경제 데이터는 이미 저장됨): %s",
+                    inf_e,
+                    exc_info=True,
+                )
+        elif isinstance(result, dict) and result.get("success") and updated == 0:
+            elog.info("저장된 신규 행이 없어 추론을 건너뜁니다.")
+
         return True
     except Exception as e:
-        logger = logging.getLogger('economic_scheduler')
-        logger.error(f"경제 데이터 업데이트 작업 중 오류 발생: {str(e)}", exc_info=True)
+        elog.error("경제 데이터 업데이트 작업 중 오류 발생: %s", e, exc_info=True)
         return False
 
 def _run_economic_scheduler():
@@ -440,7 +506,6 @@ def start_economic_data_scheduler():
         logger.warning("경제 데이터 스케줄러가 이미 실행 중입니다.")
         return False
     
-    # 한국 시간 기준 새벽 6시 5분에 경제 데이터 업데이트 작업 실행
     schedule.every().day.at(settings.SCHEDULE_ECONOMIC_UPDATE_TIME).do(_run_economic_data_update)
     
     # 별도 스레드에서 스케줄러 실행
@@ -450,7 +515,11 @@ def start_economic_data_scheduler():
     economic_data_scheduler_thread.start()
     
     logger = logging.getLogger('economic_scheduler')
-    logger.info("경제 데이터 업데이트 스케줄러가 시작되었습니다. 한국 시간 새벽 6시 5분에 실행됩니다.")
+    logger.info(
+        "경제 데이터 스케줄러 시작 (KST %s, 추론 후행: %s)",
+        settings.SCHEDULE_ECONOMIC_UPDATE_TIME,
+        settings.SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE,
+    )
     return True
 
 def stop_economic_data_scheduler():
@@ -478,4 +547,11 @@ def stop_economic_data_scheduler():
 
 def run_economic_data_update_now():
     """즉시 경제 데이터 업데이트 실행 함수 (테스트용)"""
-    return _run_economic_data_update() 
+    return _run_economic_data_update()
+
+
+def run_inference_now():
+    """경제 갱신 없이 즉시 추론·예측 DB만 갱신 (테스트용)"""
+    from predict_model.predict.run_inference import run_inference_and_save_to_db
+
+    return run_inference_and_save_to_db()
