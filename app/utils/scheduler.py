@@ -37,7 +37,7 @@ class StockScheduler:
             return False
         
         # 한국 시간 기준 밤 12시(00:00)에 매수 작업 실행
-        schedule.every().day.at("00:00").do(self._run_auto_buy)
+        schedule.every().day.at(settings.SCHEDULE_AUTO_BUY_TIME).do(self._run_auto_buy)
         
         # 별도 스레드에서 스케줄러 실행
         self.running = True
@@ -73,7 +73,7 @@ class StockScheduler:
             return False
         
         # 1분마다 매도 작업 실행
-        schedule.every(1).minutes.do(self._run_auto_sell)
+        schedule.every(settings.SCHEDULE_AUTO_SELL_INTERVAL_MIN).minutes.do(self._run_auto_sell)
         
         # 스케줄러 스레드가 없으면 시작
         if not self.running and not self.scheduler_thread:
@@ -116,25 +116,25 @@ class StockScheduler:
         """자동 매수 실행 함수 - 스케줄링된 시간에 실행됨"""
         try:
             logger.info("자동 매수 작업 시작")
-            asyncio.run(self._execute_auto_buy())
+            self._execute_auto_buy()
             logger.info("자동 매수 작업 완료")
             return True
         except Exception as e:
             logger.error(f"자동 매수 작업 중 오류 발생: {str(e)}", exc_info=True)
             return False
-    
+
     def _run_auto_sell(self):
         """자동 매도 실행 함수 - 1분마다 실행됨"""
         try:
             logger.info("자동 매도 작업 시작")
-            asyncio.run(self._execute_auto_sell())
+            self._execute_auto_sell()
             logger.info("자동 매도 작업 완료")
             return True
         except Exception as e:
             logger.error(f"자동 매도 작업 중 오류 발생: {str(e)}", exc_info=True)
             return False
     
-    async def _execute_auto_sell(self):
+    def _execute_auto_sell(self):
         """자동 매도 실행 로직"""
         # 현재 시간이 미국 장 시간인지 확인 (서머타임 고려)
         now_in_korea = datetime.now(pytz.timezone('Asia/Seoul'))
@@ -206,7 +206,7 @@ class StockScheduler:
                     logger.error(f"{stock_name}({ticker}) 현재가 조회 실패: {price_result.get('msg1', '알 수 없는 오류')}")
                     # API 속도 제한에 도달했을 때 더 오래 대기
                     if "초당" in price_result.get('msg1', ''):
-                        await asyncio.sleep(3)  # 속도 제한 오류 시 3초 대기
+                        time.sleep(3)  # 속도 제한 오류 시 3초 대기
                     continue
                 
                 # 현재가 추출 (안전하게 처리)
@@ -215,7 +215,7 @@ class StockScheduler:
                     # 빈 문자열이나 None 체크
                     if not last_price or last_price == "":
                         logger.error(f"{stock_name}({ticker}) 현재가가 비어있습니다. 다음 API 호출에서 다시 시도합니다.")
-                        await asyncio.sleep(2)  # 잠시 기다렸다가 넘어감
+                        time.sleep(2)  # 잠시 기다렸다가 넘어감
                         continue
                     
                     current_price = float(last_price)
@@ -248,15 +248,15 @@ class StockScheduler:
                     logger.error(f"{stock_name}({ticker}) 매도 주문 실패: {order_result.get('msg1', '알 수 없는 오류')}")
                 
                 # 요청 간 지연 (API 요청 제한 방지)
-                await asyncio.sleep(2)  # 1초에서 2초로 증가
+                time.sleep(2)  # API 요청 제한 방지
                 
             except Exception as e:
                 logger.error(f"{candidate['stock_name']}({candidate['ticker']}) 매도 처리 중 오류: {str(e)}", exc_info=True)
-                await asyncio.sleep(1)  # 오류 발생 시에도 잠시 대기
+                time.sleep(1)  # 오류 발생 시에도 잠시 대기
         
         logger.info("자동 매도 처리가 완료되었습니다.")
     
-    async def _execute_auto_buy(self):
+    def _execute_auto_buy(self):
         """자동 매수 실행 로직"""
         # 보유 종목 조회
         try:
@@ -366,8 +366,8 @@ class StockScheduler:
                     logger.error(f"{stock_name}({ticker}) 매수 주문 실패: {order_result.get('msg1', '알 수 없는 오류')}")
                 
                 # 요청 간 지연 (API 요청 제한 방지)
-                await asyncio.sleep(1)
-                
+                time.sleep(1)
+
             except Exception as e:
                 logger.error(f"{candidate['stock_name']}({candidate['ticker']}) 매수 처리 중 오류: {str(e)}", exc_info=True)
         
@@ -441,7 +441,7 @@ def start_economic_data_scheduler():
         return False
     
     # 한국 시간 기준 새벽 6시 5분에 경제 데이터 업데이트 작업 실행
-    schedule.every().day.at("06:05").do(_run_economic_data_update)
+    schedule.every().day.at(settings.SCHEDULE_ECONOMIC_UPDATE_TIME).do(_run_economic_data_update)
     
     # 별도 스레드에서 스케줄러 실행
     economic_data_scheduler_running = True

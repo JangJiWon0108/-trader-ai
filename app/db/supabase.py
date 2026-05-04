@@ -2,7 +2,8 @@ from supabase import create_client, Client
 from app.core.config import settings
 
 url: str = settings.SUPABASE_URL
-key: str = settings.SUPABASE_KEY
+# service role key bypasses RLS — use for all server-side writes
+key: str = settings.SUPABASE_SERVICE_KEY or settings.SUPABASE_KEY
 supabase: Client = create_client(url, key)
 
 def get_data(table_name):

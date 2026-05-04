@@ -7,7 +7,7 @@ class StockPrediction(BaseModel):
     predicted_price: float
     rise_probability: float
     recommendation: str
-    analysis: str
+    analysis: Optional[str] = None
 
 class UpdateResponse(BaseModel):
     success: bool

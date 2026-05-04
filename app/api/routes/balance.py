@@ -182,10 +182,7 @@ def get_overseas_nccs_route(
             "SORT_SQN": sort_sqn,
         }
         
-        # 환경변수에서 모의투자 여부 확인
-        is_virtual = "openapivts" in settings.kis_base_url
-        
-        if is_virtual:
+        if settings.KIS_USE_MOCK:
             # 모의투자: 현재 날짜 기준으로 지난 7일 데이터만 조회
             from datetime import datetime, timedelta
             today = datetime.now()

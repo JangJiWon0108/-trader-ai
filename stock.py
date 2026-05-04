@@ -4,9 +4,9 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import numpy as np
 import time
+from app.core.config import settings
 
-# FRED API Key 설정
-api_key = 'aedfbcd8ba091c740281c0bd8ca93b46'
+api_key = settings.FRED_API_KEY
 
 # FRED에서 제공하는 지표 코드와 명칭
 fred_indicators = {
@@ -133,71 +133,46 @@ result_df = None
 def download_yahoo_chart(symbol, start_date, end_date, interval="1d"):
     """
     Yahoo Finance Chart API를 통해 주어진 symbol의 종가(Close) 시계열을 가져옵니다.
-    - symbol: Yahoo Finance 티커 문자열 (예: "^GSPC", "AAPL")
-    - start_date: 시작일 (YYYY-MM-DD)
-    - end_date: 종료일 (YYYY-MM-DD)
-    - interval: "1d", "1wk", "1mo"
+    period1/period2 Unix 타임스탬프를 사용해 정확한 날짜 범위를 요청합니다.
     """
+    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+    # end_date 다음 날까지 요청해야 end_date 당일 데이터 포함됨
+    end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+
     sess = requests.Session()
     sess.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     })
-    
-    # 날짜 범위로 변환
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-    delta = end_dt - start_dt
-    
-    # 범위 문자열 결정 (차이가 1달 이하이면 1mo, 3달 이하이면 3mo, 6달 이하이면 6mo, 그 이상이면 max)
-    if delta.days <= 30:
-        range_str = "1mo"
-    elif delta.days <= 90:
-        range_str = "3mo"
-    elif delta.days <= 180:
-        range_str = "6mo"
-    elif delta.days <= 365:
-        range_str = "1y"
-    elif delta.days <= 730:
-        range_str = "2y"
-    elif delta.days <= 1825:
-        range_str = "5y"
-    else:
-        range_str = "max"
-    
+
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     params = {
-        "range": range_str,
+        "period1": int(start_dt.timestamp()),
+        "period2": int(end_dt.timestamp()),
         "interval": interval,
         "includePrePost": "false",
         "events": "div|split"
     }
-    
-    r = sess.get(url, params=params)
+
+    r = sess.get(url, params=params, timeout=30)
     r.raise_for_status()
     result = r.json().get("chart", {}).get("result", [None])[0]
     if not result:
         raise ValueError(f"No data for symbol: {symbol}")
-    
-    timestamps = result["timestamp"]
-    closes = result["indicators"]["quote"][0]["close"]
-    
-    # 시작 - 수정된 부분: 날짜만 사용하도록 처리
-    # 각 타임스탬프를 datetime으로 변환하고 날짜 부분만 사용
+
+    timestamps = result.get("timestamp", [])
+    closes = result["indicators"]["quote"][0].get("close", [])
+
+    if not timestamps or not closes:
+        raise ValueError(f"Empty data for symbol: {symbol}")
+
     date_only = [pd.Timestamp.fromtimestamp(ts).date() for ts in timestamps]
-    
-    # 데이터프레임 생성 시 날짜만 포함하도록 수정
-    df = pd.DataFrame({
-        "Close": closes
-    }, index=pd.DatetimeIndex(date_only))
-    
-    # 중복된 날짜가 있는 경우 마지막 값만 유지
+    df = pd.DataFrame({"Close": closes}, index=pd.DatetimeIndex(date_only))
+
     if df.index.duplicated().any():
         df = df[~df.index.duplicated(keep='last')]
-    # 종료 - 수정된 부분
-    
-    # 시작일과 종료일 사이의 데이터만 필터링
+
     df = df[(df.index >= pd.Timestamp(start_date)) & (df.index <= pd.Timestamp(end_date))]
-    
+    df = df.dropna()
     return df
 
 def collect_economic_data(start_date='2006-01-01', end_date=None):

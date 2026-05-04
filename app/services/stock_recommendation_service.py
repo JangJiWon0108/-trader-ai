@@ -1,6 +1,7 @@
 import pandas as pd
 import requests
 import time
+import threading
 from datetime import datetime, timedelta
 from app.db.supabase import supabase
 import numpy as np
@@ -250,24 +251,37 @@ class StockRecommendationService:
 
         print(f"분석할 티커 목록 ({len(all_tickers)}개): {all_tickers}")
 
-        api_key = settings.ALPHA_VANTAGE_API_KEY
+        api_keys = [
+            k.strip()
+            for k in (
+                settings.ALPHA_VANTAGE_API_KEY_MAIN,
+                settings.ALPHA_VANTAGE_API_KEY_SUB_1,
+                settings.ALPHA_VANTAGE_API_KEY_SUB_2,
+            )
+            if k and str(k).strip()
+        ]
+        if not api_keys and settings.ALPHA_VANTAGE_API_KEY and str(
+            settings.ALPHA_VANTAGE_API_KEY
+        ).strip():
+            api_keys = [settings.ALPHA_VANTAGE_API_KEY.strip()]
+
+        if not api_keys:
+            return {
+                "message": "Alpha Vantage API 키가 없습니다 (MAIN/SUB_1/SUB_2 또는 ALPHA_VANTAGE_API_KEY)",
+                "results": [],
+            }
+
         relevance_threshold = 0.2
-        sleep_interval = 5
+        sleep_interval = 5 if len(api_keys) == 1 else 15
         yesterday = (datetime.now() - timedelta(days=3)).strftime("%Y%m%dT0000")
 
         base_url = "https://www.alphavantage.co/query"
-        params = {
-            "function": "NEWS_SENTIMENT",
-            "time_from": yesterday,
-            "limit": 100,
-            "apikey": api_key
-        }
 
         ticker_to_stock = {ticker: stock for stock, ticker in STOCK_TO_TICKER.items()}
         recommendations_by_ticker = {
             STOCK_TO_TICKER[rec["Stock"]]: rec for rec in recommendations if rec["Stock"] in STOCK_TO_TICKER
         }
-        
+
         # 보유 주식 정보를 ticker로 매핑
         holdings_by_ticker = {item.get("ovrs_pdno"): item for item in holdings if item.get("ovrs_pdno")}
 
@@ -277,72 +291,93 @@ class StockRecommendationService:
         print("기존 감정 분석 데이터 삭제 완료")
 
         results = []
-        for ticker in all_tickers:
-            print(f"{ticker} 처리 중...")
-            params["tickers"] = ticker
+        results_lock = threading.Lock()
 
-            response = requests.get(base_url, params=params)
-            if response.status_code != 200:
-                results.append({
+        def fetch_group(group_tickers, api_key):
+            for ticker in group_tickers:
+                print(f"{ticker} 처리 중... (키: {api_key[:6]}...)")
+                params = {
+                    "function": "NEWS_SENTIMENT",
+                    "time_from": yesterday,
+                    "limit": 100,
+                    "apikey": api_key,
+                    "tickers": ticker,
+                }
+
+                response = requests.get(base_url, params=params)
+                if response.status_code != 200:
+                    with results_lock:
+                        results.append({
+                            "ticker": ticker,
+                            "stock_name": ticker_to_stock.get(ticker, ticker),
+                            "message": "API 호출 실패",
+                            "is_recommended": ticker in recommended_tickers,
+                            "is_holding": ticker in holding_tickers,
+                            "recommendation_info": recommendations_by_ticker.get(ticker, {}),
+                            "holding_info": holdings_by_ticker.get(ticker, {})
+                        })
+                    time.sleep(sleep_interval)
+                    continue
+
+                api_data = response.json()
+                feed = api_data.get('feed', [])
+
+                articles = [
+                    float(sentiment['ticker_sentiment_score'])
+                    for article in feed
+                    for sentiment in article.get('ticker_sentiment', [])
+                    if sentiment['ticker'] == ticker and float(sentiment['relevance_score']) >= relevance_threshold
+                ]
+
+                if not articles:
+                    with results_lock:
+                        results.append({
+                            "ticker": ticker,
+                            "stock_name": ticker_to_stock.get(ticker, ticker),
+                            "message": "관련 기사 없음",
+                            "is_recommended": ticker in recommended_tickers,
+                            "is_holding": ticker in holding_tickers,
+                            "recommendation_info": recommendations_by_ticker.get(ticker, {}),
+                            "holding_info": holdings_by_ticker.get(ticker, {})
+                        })
+                    time.sleep(sleep_interval)
+                    continue
+
+                average_sentiment = sum(articles) / len(articles)
+                article_count = len(articles)
+                calculation_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                supabase_data = {
                     "ticker": ticker,
-                    "stock_name": ticker_to_stock.get(ticker, ticker),  # 티커명이 없으면 티커 자체를 표시
-                    "message": "API 호출 실패",
-                    "is_recommended": ticker in recommended_tickers,
-                    "is_holding": ticker in holding_tickers,
-                    "recommendation_info": recommendations_by_ticker.get(ticker, {}),
-                    "holding_info": holdings_by_ticker.get(ticker, {})
-                })
+                    "average_sentiment_score": average_sentiment,
+                    "article_count": article_count,
+                    "calculation_date": calculation_date
+                }
+                supabase.table("ticker_sentiment_analysis").insert(supabase_data).execute()
+
+                with results_lock:
+                    results.append({
+                        "ticker": ticker,
+                        "stock_name": ticker_to_stock.get(ticker, ticker),
+                        "average_sentiment_score": average_sentiment,
+                        "article_count": article_count,
+                        "is_recommended": ticker in recommended_tickers,
+                        "is_holding": ticker in holding_tickers,
+                        "recommendation_info": recommendations_by_ticker.get(ticker, {}),
+                        "holding_info": holdings_by_ticker.get(ticker, {})
+                    })
                 time.sleep(sleep_interval)
-                continue
 
-            api_data = response.json()
-            feed = api_data.get('feed', [])
-
-            articles = [
-                float(sentiment['ticker_sentiment_score'])
-                for article in feed
-                for sentiment in article.get('ticker_sentiment', [])
-                if sentiment['ticker'] == ticker and float(sentiment['relevance_score']) >= relevance_threshold
-            ]
-
-            if not articles:
-                results.append({
-                    "ticker": ticker,
-                    "stock_name": ticker_to_stock.get(ticker, ticker),
-                    "message": "관련 기사 없음",
-                    "is_recommended": ticker in recommended_tickers,
-                    "is_holding": ticker in holding_tickers,
-                    "recommendation_info": recommendations_by_ticker.get(ticker, {}),
-                    "holding_info": holdings_by_ticker.get(ticker, {})
-                })
-                time.sleep(sleep_interval)
-                continue
-
-            average_sentiment = sum(articles) / len(articles)
-            article_count = len(articles)
-            calculation_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # 해당 티커에 대한 데이터 추가
-            # 테이블 스키마에 맞게 필드 조정
-            supabase_data = {
-                "ticker": ticker,
-                "average_sentiment_score": average_sentiment,
-                "article_count": article_count,
-                "calculation_date": calculation_date
-            }
-            supabase.table("ticker_sentiment_analysis").insert(supabase_data).execute()
-
-            results.append({
-                "ticker": ticker,
-                "stock_name": ticker_to_stock.get(ticker, ticker),
-                "average_sentiment_score": average_sentiment,
-                "article_count": article_count,
-                "is_recommended": ticker in recommended_tickers,
-                "is_holding": ticker in holding_tickers,
-                "recommendation_info": recommendations_by_ticker.get(ticker, {}),
-                "holding_info": holdings_by_ticker.get(ticker, {})
-            })
-            time.sleep(sleep_interval)
+        # 티커를 키 수만큼 균등 분배 후 병렬 실행
+        groups = [all_tickers[i::len(api_keys)] for i in range(len(api_keys))]
+        threads = [
+            threading.Thread(target=fetch_group, args=(group, key))
+            for group, key in zip(groups, api_keys)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
         return {
             "message": f"{len(results)}개의 티커(추천 주식: {len(recommended_tickers)}개, 보유 주식: {len(holding_tickers)}개)를 분석했습니다",

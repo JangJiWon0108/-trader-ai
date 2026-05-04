@@ -132,13 +132,14 @@ def get_domestic_balance():
     access_token = get_access_token()
     
     url = f"{settings.kis_base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
-    
+    tr_id = "TTTC8434R" if not settings.KIS_USE_MOCK else "VTTC8434R"
+
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "authorization": f"Bearer {access_token}",
         "appkey": settings.KIS_APPKEY,
         "appsecret": settings.KIS_APPSECRET,
-        "tr_id": settings.TR_ID  # 국내주식 잔고 조회 TR ID
+        "tr_id": tr_id,
     }
     
     params = {
@@ -191,12 +192,13 @@ def get_overseas_balance(ovrs_excg_cd="NASD"):
     
     url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-balance"
     
+    tr_id = "TTTS3012R" if not settings.KIS_USE_MOCK else "VTTS3012R"
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "authorization": f"Bearer {access_token}",
         "appkey": settings.KIS_APPKEY,
         "appsecret": settings.KIS_APPSECRET,
-        "tr_id": "VTTS3012R"  # 해외주식 잔고 조회 TR ID
+        "tr_id": tr_id,
     }
     
     params = {
@@ -280,8 +282,7 @@ def overseas_order_resv(order_data):
         access_token = get_access_token()
         url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/order-resv"
         
-        # 모의투자 여부 확인
-        is_virtual = "openapivts" in settings.kis_base_url
+        is_mock = settings.KIS_USE_MOCK
         
         # 매수/매도 여부 및 거래소에 따라 TR_ID 결정
         is_buy = order_data.get("is_buy", True)
@@ -289,11 +290,11 @@ def overseas_order_resv(order_data):
         
         if ovrs_excg_cd in ["NASD", "NYSE", "AMEX"]:  # 미국 주식
             if is_buy:
-                tr_id = "VTTT3014U" if is_virtual else "TTTT3014U"  # 미국 매수 예약
+                tr_id = "VTTT3014U" if is_mock else "TTTT3014U"  # 미국 매수 예약
             else:
-                tr_id = "VTTT3016U" if is_virtual else "TTTT3016U"  # 미국 매도 예약
+                tr_id = "VTTT3016U" if is_mock else "TTTT3016U"  # 미국 매도 예약
         else:  # 기타 거래소
-            tr_id = "VTTS3013U" if is_virtual else "TTTS3013U"  # 중국/홍콩/일본/베트남 예약
+            tr_id = "VTTS3013U" if is_mock else "TTTS3013U"  # 중국/홍콩/일본/베트남 예약
             
             # 중국/홍콩/일본/베트남의 경우 매수/매도 구분 코드 추가
             if not is_buy:
@@ -330,12 +331,13 @@ def inquire_psamount(params):
     try:
         access_token = get_access_token()
         url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-psamount"
+        tr_id = "TTTS3007R" if not settings.KIS_USE_MOCK else "VTTS3007R"
         headers = {
             "Content-Type": "application/json; charset=utf-8",
             "authorization": f"Bearer {access_token}",
             "appkey": settings.KIS_APPKEY,
             "appsecret": settings.KIS_APPSECRET,
-            "tr_id": settings.TR_ID,
+            "tr_id": tr_id,
         }
         
         # 기존 파라미터 유지
@@ -393,15 +395,12 @@ def get_overseas_nccs(params):
     try:
         access_token = get_access_token()
         
-        # 모의투자에서는 직접 API가 지원되지 않으므로 주문체결내역 API로 대체
-        if "openapivts" in settings.kis_base_url:
-            # 모의투자 환경에서는 주문체결내역 API 사용
+        if settings.KIS_USE_MOCK:
             url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-order"
-            tr_id = "VTTS3035R"  # 모의투자 주문체결내역 TR_ID
+            tr_id = "VTTS3035R"
         else:
-            # 실전투자 환경에서는 미체결내역 API 사용
             url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-nccs"
-            tr_id = "TTTS3018R"  # 실전투자 미체결내역 TR_ID
+            tr_id = "TTTS3018R"
             
         headers = {
             "Content-Type": "application/json; charset=utf-8",
@@ -414,8 +413,7 @@ def get_overseas_nccs(params):
         response = requests.get(url, headers=headers, params=params)
         result = response.json()
         
-        # 모의투자에서는 nccs_qty(미체결수량)가 0보다 큰 항목만 필터링
-        if "openapivts" in settings.kis_base_url and 'output' in result and isinstance(result['output'], list):
+        if settings.KIS_USE_MOCK and 'output' in result and isinstance(result['output'], list):
             result['output'] = [item for item in result['output'] if int(item.get('nccs_qty', 0)) > 0]
         
         return result
@@ -428,10 +426,8 @@ def get_overseas_order_detail(params):
     try:
         access_token = get_access_token()
         
-        # API 엔드포인트 및 TR_ID 확인
-        # v1 대신 v1.0 사용 시도 
         url = f"{settings.kis_base_url}/uapi/overseas-stock/v1/trading/inquire-order"
-        tr_id = "VTTS3035R"  # 모의투자 TR_ID
+        tr_id = "VTTS3035R" if settings.KIS_USE_MOCK else "TTTS3035R"
         
         headers = {
             "Content-Type": "application/json; charset=utf-8",
@@ -457,7 +453,7 @@ def get_overseas_order_detail(params):
             return {
                 "rt_cd": "0",
                 "msg_cd": "NODATA",
-                "msg1": "모의투자 환경에서는 해당 API를 사용할 수 없습니다.",
+                "msg1": "해당 API를 사용할 수 없습니다.",
                 "output": []
             }
         
@@ -496,10 +492,7 @@ def get_overseas_order_detail(params):
 def get_overseas_order_resv_list(params):
     """해외주식 예약주문 조회"""
     try:
-        # 모의투자 환경 확인
-        is_virtual = "openapivts" in settings.kis_base_url
-        
-        if is_virtual:
+        if settings.KIS_USE_MOCK:
             # 모의투자에서는 지원되지 않으므로 안내 메시지 반환
             return {
                 "rt_cd": "0",
@@ -585,8 +578,7 @@ def order_overseas_stock(order_data):
         if "ACNT_PRDT_CD" not in order_data or not order_data["ACNT_PRDT_CD"]:
             order_data["ACNT_PRDT_CD"] = settings.KIS_ACNT_PRDT_CD
             
-        # 모의투자 여부 확인
-        is_virtual = "openapivts" in settings.kis_base_url
+        is_mock = settings.KIS_USE_MOCK
         
         # 매수/매도 여부 확인
         is_buy = order_data.get("is_buy", True)
@@ -598,39 +590,39 @@ def order_overseas_stock(order_data):
         if ovrs_excg_cd in ["NASD", "NYSE", "AMEX"]:
             # 미국 주식
             if is_buy:
-                tr_id = "VTTT1002U" if is_virtual else "TTTT1002U"  # 미국 매수
+                tr_id = "VTTT1002U" if is_mock else "TTTT1002U"  # 미국 매수
             else:
-                tr_id = "VTTT1001U" if is_virtual else "TTTT1006U"  # 미국 매도
+                tr_id = "VTTT1001U" if is_mock else "TTTT1006U"  # 미국 매도
         elif ovrs_excg_cd == "TKSE":
             # 일본 주식
             if is_buy:
-                tr_id = "VTTS0308U" if is_virtual else "TTTS0308U"  # 일본 매수
+                tr_id = "VTTS0308U" if is_mock else "TTTS0308U"  # 일본 매수
             else:
-                tr_id = "VTTS0307U" if is_virtual else "TTTS0307U"  # 일본 매도
+                tr_id = "VTTS0307U" if is_mock else "TTTS0307U"  # 일본 매도
         elif ovrs_excg_cd == "SHAA":
             # 상해 주식
             if is_buy:
-                tr_id = "VTTS0202U" if is_virtual else "TTTS0202U"  # 상해 매수
+                tr_id = "VTTS0202U" if is_mock else "TTTS0202U"  # 상해 매수
             else:
-                tr_id = "VTTS1005U" if is_virtual else "TTTS1005U"  # 상해 매도
+                tr_id = "VTTS1005U" if is_mock else "TTTS1005U"  # 상해 매도
         elif ovrs_excg_cd == "SEHK":
             # 홍콩 주식
             if is_buy:
-                tr_id = "VTTS1002U" if is_virtual else "TTTS1002U"  # 홍콩 매수
+                tr_id = "VTTS1002U" if is_mock else "TTTS1002U"  # 홍콩 매수
             else:
-                tr_id = "VTTS1001U" if is_virtual else "TTTS1001U"  # 홍콩 매도
+                tr_id = "VTTS1001U" if is_mock else "TTTS1001U"  # 홍콩 매도
         elif ovrs_excg_cd == "SZAA":
             # 심천 주식
             if is_buy:
-                tr_id = "VTTS0305U" if is_virtual else "TTTS0305U"  # 심천 매수
+                tr_id = "VTTS0305U" if is_mock else "TTTS0305U"  # 심천 매수
             else:
-                tr_id = "VTTS0304U" if is_virtual else "TTTS0304U"  # 심천 매도
+                tr_id = "VTTS0304U" if is_mock else "TTTS0304U"  # 심천 매도
         elif ovrs_excg_cd in ["HASE", "VNSE"]:
             # 베트남 주식
             if is_buy:
-                tr_id = "VTTS0311U" if is_virtual else "TTTS0311U"  # 베트남 매수
+                tr_id = "VTTS0311U" if is_mock else "TTTS0311U"  # 베트남 매수
             else:
-                tr_id = "VTTS0310U" if is_virtual else "TTTS0310U"  # 베트남 매도
+                tr_id = "VTTS0310U" if is_mock else "TTTS0310U"  # 베트남 매도
         else:
             return {
                 "rt_cd": "1",
