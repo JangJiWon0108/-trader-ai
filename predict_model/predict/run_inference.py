@@ -277,10 +277,11 @@ def generate_analysis(row: pd.Series) -> str:
     return f"{name} is expected to fall by about {-rise_prob:.2f}%. A cautious approach is recommended."
 
 
-def save_analysis_to_db(supabase: Client, result_df: pd.DataFrame, chunk_size: int = 100) -> None:
-    records = []
+def dataframe_rows_to_jsonable_records(result_df: pd.DataFrame) -> list[dict]:
+    """DB·JSON 직렬화에 맞춘 행 목록 (NaN/ numpy 스칼라 정규화)."""
+    records: list[dict] = []
     for _, row in result_df.iterrows():
-        rec = {}
+        rec: dict = {}
         for k, v in row.items():
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
                 rec[k] = None
@@ -289,6 +290,11 @@ def save_analysis_to_db(supabase: Client, result_df: pd.DataFrame, chunk_size: i
             else:
                 rec[k] = v
         records.append(rec)
+    return records
+
+
+def save_analysis_to_db(supabase: Client, result_df: pd.DataFrame, chunk_size: int = 100) -> None:
+    records = dataframe_rows_to_jsonable_records(result_df)
     supabase.table("stock_analysis_results").delete().neq("id", 0).execute()
     for i in range(0, len(records), chunk_size):
         supabase.table("stock_analysis_results").insert(records[i : i + chunk_size]).execute()
@@ -345,7 +351,9 @@ def run_inference_and_save_to_db(
     스케줄러(경제 데이터 갱신 직후)에서 호출한다.
 
     Returns:
-        success, model_dir, prediction_rows, analysis_rows (write_db 시), write_db
+        success, model_dir, prediction_rows, analysis_rows (write_db 시),
+        analysis_records (write_db 시 stock_analysis_results 에 해당하는 전체 행),
+        write_db
     """
     _load_env()
     resolved = resolve_model_dir(model_dir)
@@ -381,12 +389,14 @@ def run_inference_and_save_to_db(
             "write_db": False,
             "model_dir": str(resolved),
             "prediction_rows": len(result_data),
+            "analysis_records": [],
         }
 
     save_predictions_to_db(supabase, result_data)
 
     pred_from_db = get_predictions_from_db(supabase)
     final = build_final_analysis(pred_from_db, target_columns, forecast_horizon)
+    analysis_records = dataframe_rows_to_jsonable_records(final)
     save_analysis_to_db(supabase, final)
     print("\n=== 완료: predicted_stocks + stock_analysis_results 갱신 ===")
     print(final.head(10).to_string(index=False))
@@ -396,6 +406,7 @@ def run_inference_and_save_to_db(
         "model_dir": str(resolved),
         "prediction_rows": len(result_data),
         "analysis_rows": len(final),
+        "analysis_records": analysis_records,
     }
 
 

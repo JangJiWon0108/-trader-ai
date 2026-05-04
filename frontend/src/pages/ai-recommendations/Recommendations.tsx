@@ -110,8 +110,8 @@ export default function Recommendations() {
       <PageHeader title="AI 추천 종목" subtitle="기술적 지표 + 감성분석 + AI 모델 통합 결과" />
 
       <div style={{ display: 'flex', gap: 8, marginBottom: theme.gutter }}>
-        <button style={tabStyle(tab === 'combined')} onClick={() => setTab('combined')}>통합 추천 (기술+감성)</button>
-        <button style={tabStyle(tab === 'ai')} onClick={() => setTab('ai')}>AI 모델 예측</button>
+        <button className="trader-btn" style={tabStyle(tab === 'combined')} onClick={() => setTab('combined')}>통합 추천 (기술+감성)</button>
+        <button className="trader-btn" style={tabStyle(tab === 'ai')} onClick={() => setTab('ai')}>AI 모델 예측</button>
       </div>
 
       {tab === 'combined' && (
@@ -183,7 +183,7 @@ export default function Recommendations() {
                         sortKey={pk} sortDir={pd} onSort={pr}
                         style={{ ...th, textAlign: right ? 'right' : 'left' }} tip={tip} />
                     ))}
-                    <th style={th}><Tooltip tip="AI가 생성한 해당 종목 투자 근거 요약" below>분석 요약</Tooltip></th>
+                    <th style={th}><Tooltip tip="AI가 생성한 해당 종목 투자 근거 요약">분석 요약</Tooltip></th>
                   </tr>
                 </thead>
                 <tbody>

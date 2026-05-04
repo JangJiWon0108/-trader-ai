@@ -6,7 +6,7 @@ import SortableTh from '../../components/SortableTh'
 import { useTableSort } from '../../hooks/useTableSort'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
-import { fetchAllOrders, type NccsItem } from '../../api'
+import { fetchOrders, type NccsItem } from '../../api'
 
 
 const th: CSSProperties = {
@@ -52,9 +52,8 @@ const accessors: Record<string, (r: Row) => string | number> = {
 
 export default function Orders() {
   const [exchange, setExchange] = useState('NASD')
-  const { data, loading, error } = useApi(fetchAllOrders, [exchange])
-
-  const rows = buildRows(data ?? [])
+  const { data: nData, loading, error } = useApi(() => fetchOrders(exchange), [exchange])
+  const rows = buildRows(nData?.output ?? [])
   const { sortedRows, sortKey, sortDir, requestSort } = useTableSort(rows, accessors)
 
   const excBtnStyle = (ex: string): CSSProperties => ({
@@ -75,7 +74,7 @@ export default function Orders() {
       <div style={{ display: 'flex', gap: 8, marginBottom: theme.gutter, flexWrap: 'wrap', alignItems: 'center' }}>
         <span style={{ fontSize: 13, color: theme.onSurfaceVariant }}>거래소:</span>
         {['NASD', 'NYSE', 'AMEX'].map((ex) => (
-          <button key={ex} style={excBtnStyle(ex)} onClick={() => setExchange(ex)}>{ex}</button>
+          <button key={ex} className="trader-btn" style={excBtnStyle(ex)} onClick={() => setExchange(ex)}>{ex}</button>
         ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, color: theme.onSurfaceVariant }}>
           {loading ? '로딩 중…' : `${rows.length}건`}

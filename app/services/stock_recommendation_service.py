@@ -1,14 +1,27 @@
+"""
+추천·기술·감성·매도 후보 로직 및 Supabase 반영.
+
+`stock_analysis_results`, `stock_recommendations`, `ticker_sentiment_analysis` 등을 조회·갱신한다.
+"""
+
+# ─── 모듈 임포트 ───
+import logging
+import threading
+import time
+from datetime import datetime, timedelta
+
+import numpy as np
 import pandas as pd
 import requests
-import time
-import threading
-from datetime import datetime, timedelta
-from app.db.supabase import supabase
-import numpy as np
+
 from app.core.config import settings
+from app.db.supabase import supabase
 from app.services.balance_service import get_overseas_balance
 
-# 한국어 주식명과 티커 심볼 매핑
+logger = logging.getLogger(__name__)
+
+# ─── 상수 정의 ───
+
 STOCK_TO_TICKER = {
     "애플": "AAPL",
     "마이크로소프트": "MSFT",
@@ -36,34 +49,36 @@ STOCK_TO_TICKER = {
     "AMD": "AMD",
     "어플라이드 머티리얼즈": "AMAT",
     "S&P 500 ETF": "SPY",
-    "QQQ ETF": "QQQ"
+    "QQQ ETF": "QQQ",
 }
+
+
+# ─── 공개 API ───
+
 
 class StockRecommendationService:
     def __init__(self):
-        # ETF 제외한 컬럼명 리스트
         self.stock_columns = list(STOCK_TO_TICKER.keys())[:-2]
-        self.lookback_days = 180  # 6개월 데이터
+        self.lookback_days = settings.TECH_LOOKBACK_DAYS
 
     def calculate_sma(self, series, period):
-        """단순 이동평균(SMA) 계산"""
         return series.rolling(window=period).mean()
 
     def calculate_ema(self, series, period):
-        """지수 이동평균(EMA) 계산"""
         return series.ewm(span=period, adjust=False).mean()
 
-    def calculate_rsi(self, series, period=14):
-        """RSI 계산"""
+    def calculate_rsi(self, series, period=None):
+        period = period or settings.TECH_RSI_PERIOD
         delta = series.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
         rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
+        return 100 - (100 / (1 + rs))
 
-    def calculate_macd(self, series, short_period=12, long_period=26, signal_period=9):
-        """MACD 및 Signal 라인 계산"""
+    def calculate_macd(self, series, short_period=None, long_period=None, signal_period=None):
+        short_period = short_period or settings.TECH_MACD_SHORT
+        long_period = long_period or settings.TECH_MACD_LONG
+        signal_period = signal_period or settings.TECH_MACD_SIGNAL
         short_ema = self.calculate_ema(series, short_period)
         long_ema = self.calculate_ema(series, long_period)
         macd = short_ema - long_ema
@@ -100,14 +115,13 @@ class StockRecommendationService:
         for stock in self.stock_columns:
             prices = df[stock]
 
-            # 지표 계산
-            sma20 = self.calculate_sma(prices, 20)
-            sma50 = self.calculate_sma(prices, 50)
+            sma20 = self.calculate_sma(prices, settings.TECH_SMA_SHORT)
+            sma50 = self.calculate_sma(prices, settings.TECH_SMA_LONG)
             golden_cross = sma20 > sma50
             rsi = self.calculate_rsi(prices)
             macd, signal = self.calculate_macd(prices)
             macd_buy_signal = macd > signal
-            recommended = golden_cross & (rsi < 50) & macd_buy_signal
+            recommended = golden_cross & (rsi < settings.BUY_RSI_MAX) & macd_buy_signal
 
             # 가장 최근 날짜의 결과만 저장
             latest_date = df.index[-1]
@@ -137,9 +151,7 @@ class StockRecommendationService:
             supabase.table("stock_recommendations").insert(recommendations).execute()
         
         except Exception as e:
-            print(f"오류 발생: {str(e)}")
-            import traceback
-            print(traceback.format_exc())  # 상세 스택 트레이스 출력
+            logger.exception("추천 데이터 DB 저장 실패: %s", e)
             raise Exception(f"추천 주식 분석 중 오류: {str(e)}")
 
         return {"message": f"{len(recommendations)}개의 추천 데이터가 생성되었습니다", "data": recommendations}
@@ -158,7 +170,7 @@ class StockRecommendationService:
         for col in numeric_columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-        filtered_df = df[(df['Accuracy (%)'] >= 80) & (df['Rise Probability (%)'] >= 3)]
+        filtered_df = df[(df['Accuracy (%)'] >= settings.BUY_MODEL_ACCURACY_MIN) & (df['Rise Probability (%)'] >= settings.BUY_RISE_PROB_MIN)]
         filtered_df = filtered_df.sort_values(by='Rise Probability (%)', ascending=False)
         result_columns = [
             'Stock', 'Accuracy (%)', 'Rise Probability (%)', 'Last Actual Price',
@@ -183,7 +195,7 @@ class StockRecommendationService:
         if not recommendations:
             return {"message": "추천 주식이 없습니다", "results": []}
 
-        sentiment_response = supabase.table("ticker_sentiment_analysis").select("*").gte("average_sentiment_score", 0.15).execute()
+        sentiment_response = supabase.table("ticker_sentiment_analysis").select("*").gte("average_sentiment_score", settings.BUY_SENTIMENT_MIN).execute()
         if not sentiment_response.data:
             return {"message": "감정 분석 데이터가 없습니다", "results": []}
 
@@ -236,9 +248,9 @@ class StockRecommendationService:
         
         if balance_result.get("rt_cd") == "0" and "output1" in balance_result:
             holdings = balance_result.get("output1", [])
-            print(f"보유 주식 정보를 성공적으로 가져왔습니다. 총 {len(holdings)}개 종목 보유 중")
+            logger.info(f"보유 주식 정보를 성공적으로 가져왔습니다. 총 {len(holdings)}개 종목 보유 중")
         else:
-            print(f"보유 주식 정보를 가져오는데 실패했습니다: {balance_result.get('msg1', '알 수 없는 오류')}")
+            logger.info(f"보유 주식 정보를 가져오는데 실패했습니다: {balance_result.get('msg1', '알 수 없는 오류')}")
         
         # 보유 주식의 티커 목록 생성
         holding_tickers = [item.get("ovrs_pdno") for item in holdings if item.get("ovrs_pdno")]
@@ -249,7 +261,7 @@ class StockRecommendationService:
         if not all_tickers:
             return {"message": "분석할 티커가 없습니다", "results": []}
 
-        print(f"분석할 티커 목록 ({len(all_tickers)}개): {all_tickers}")
+        logger.info(f"분석할 티커 목록 ({len(all_tickers)}개): {all_tickers}")
 
         api_keys = [
             k.strip()
@@ -271,9 +283,9 @@ class StockRecommendationService:
                 "results": [],
             }
 
-        relevance_threshold = 0.2
+        relevance_threshold = settings.SENTIMENT_RELEVANCE_THRESHOLD
         sleep_interval = 5 if len(api_keys) == 1 else 15
-        yesterday = (datetime.now() - timedelta(days=3)).strftime("%Y%m%dT0000")
+        yesterday = (datetime.now() - timedelta(days=settings.SENTIMENT_LOOKBACK_DAYS)).strftime("%Y%m%dT0000")
 
         base_url = "https://www.alphavantage.co/query"
 
@@ -286,16 +298,16 @@ class StockRecommendationService:
         holdings_by_ticker = {item.get("ovrs_pdno"): item for item in holdings if item.get("ovrs_pdno")}
 
         # 기존 감정 분석 데이터 삭제
-        print("기존 감정 분석 데이터 삭제 중...")
+        logger.info("기존 감정 분석 데이터 삭제 중...")
         supabase.table("ticker_sentiment_analysis").delete().gte("ticker", "").execute()
-        print("기존 감정 분석 데이터 삭제 완료")
+        logger.info("기존 감정 분석 데이터 삭제 완료")
 
         results = []
         results_lock = threading.Lock()
 
         def fetch_group(group_tickers, api_key):
             for ticker in group_tickers:
-                print(f"{ticker} 처리 중... (키: {api_key[:6]}...)")
+                logger.info(f"{ticker} 처리 중... (키: {api_key[:6]}...)")
                 params = {
                     "function": "NEWS_SENTIMENT",
                     "time_from": yesterday,
@@ -406,10 +418,10 @@ class StockRecommendationService:
             tech_df["MACD_매수_신호"] = tech_df["MACD_매수_신호"].astype(bool)
             tech_df["RSI"] = pd.to_numeric(tech_df["RSI"])
             
-            # 필터링: 골든_크로스=true, MACD_매수_신호=true, RSI<50 중 하나 이상
+            # 필터링: 골든_크로스=true, MACD_매수_신호=true, RSI<BUY_RSI_MAX 중 하나 이상 (OR)
             mask_golden = tech_df["골든_크로스"] == True
             mask_macd = tech_df["MACD_매수_신호"] == True
-            mask_rsi = tech_df["RSI"] < 50
+            mask_rsi = tech_df["RSI"] < settings.BUY_RSI_MAX
             combined_mask = np.logical_or.reduce([mask_golden, mask_macd, mask_rsi])
             filtered_tech_df = tech_df[combined_mask]
             
@@ -423,7 +435,7 @@ class StockRecommendationService:
                 return {"message": "추천 주식이 없습니다", "results": []}
             
             # 3. 감정 분석 데이터 조회
-            sentiment_response = supabase.table("ticker_sentiment_analysis").select("*").gte("average_sentiment_score", 0.15).execute()
+            sentiment_response = supabase.table("ticker_sentiment_analysis").select("*").gte("average_sentiment_score", settings.BUY_SENTIMENT_MIN).execute()
             
             # 4. 데이터 매핑 준비
             tech_map = {row["종목"]: row.to_dict() for _, row in filtered_tech_df.iterrows()}
@@ -472,27 +484,27 @@ class StockRecommendationService:
             final_results = []
             for item in results:
                 sentiment_score = item["sentiment_score"]
-                tech_conditions = [item["golden_cross"], item["rsi"] < 50, item["macd_buy_signal"]]
-                
-                if sentiment_score is not None and sentiment_score >= 0.15:
-                    if sum(tech_conditions) >= 2:
+                tech_conditions = [item["golden_cross"], item["rsi"] < settings.BUY_RSI_MAX, item["macd_buy_signal"]]
+
+                if sentiment_score is not None and sentiment_score >= settings.BUY_SENTIMENT_MIN:
+                    if sum(tech_conditions) >= settings.BUY_TECH_MIN_WITH_SENTIMENT:
                         final_results.append(item)
                 else:
-                    if sum(tech_conditions) >= 3:
+                    if sum(tech_conditions) >= settings.BUY_TECH_MIN_WITHOUT_SENTIMENT:
                         final_results.append(item)
 
             # 7. 종합 점수 계산 및 정렬
             for item in final_results:
                 sentiment_score = item["sentiment_score"] if item["sentiment_score"] is not None else 0.0
                 tech_conditions_count = (
-                    1.5 * item["golden_cross"] +
-                    1.0 * (item["rsi"] < 50) +
-                    1.0 * item["macd_buy_signal"]
+                    settings.BUY_SCORE_WEIGHT_GOLDEN_CROSS * item["golden_cross"] +
+                    settings.BUY_SCORE_WEIGHT_RSI * (item["rsi"] < settings.BUY_RSI_MAX) +
+                    settings.BUY_SCORE_WEIGHT_MACD * item["macd_buy_signal"]
                 )
                 item["composite_score"] = (
-                    0.3 * item["rise_probability"] +
-                    0.4 * tech_conditions_count +
-                    0.3 * sentiment_score
+                    settings.BUY_SCORE_WEIGHT_RISE_PROB * item["rise_probability"] +
+                    settings.BUY_SCORE_WEIGHT_TECH * tech_conditions_count +
+                    settings.BUY_SCORE_WEIGHT_SENTIMENT * sentiment_score
                 )
 
             final_results.sort(key=lambda x: x["composite_score"], reverse=True)
@@ -504,9 +516,7 @@ class StockRecommendationService:
             }
         
         except Exception as e:
-            print(f"오류 발생: {str(e)}")
-            import traceback
-            print(traceback.format_exc())  # 상세 스택 트레이스 출력
+            logger.exception("기술·감성 결합 추천 처리 실패: %s", e)
             raise Exception(f"추천 주식 분석 중 오류: {str(e)}")
 
     def get_stocks_to_sell(self):
@@ -539,7 +549,7 @@ class StockRecommendationService:
                     "sell_candidates": []
                 }
             
-            print(f"보유 종목 정보를 성공적으로 가져왔습니다. 총 {len(holdings)}개 종목 보유 중")
+            logger.info(f"보유 종목 정보를 성공적으로 가져왔습니다. 총 {len(holdings)}개 종목 보유 중")
             
             # 2. 티커와 한글명 매핑 생성
             ticker_to_korean = {}
@@ -589,9 +599,9 @@ class StockRecommendationService:
                 technical_sell_signals = 0
                 
                 # 조건 1: 가격 기반 매도 (익절/손절)
-                if price_change_percent >= 5:
+                if price_change_percent >= settings.SELL_TAKE_PROFIT_PCT:
                     sell_reasons.append(f"익절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 상승")
-                elif price_change_percent <= -7:
+                elif price_change_percent <= settings.SELL_STOP_LOSS_PCT:
                     sell_reasons.append(f"손절 조건 충족: 구매가 대비 {price_change_percent:.2f}% 하락")
                 
                 # 기술적 지표 확인
@@ -604,11 +614,11 @@ class StockRecommendationService:
                 tech_sell_signals_details = []
                 if tech_record:
                     # 기술적 지표 매도 신호 확인
-                    if not tech_record["골든_크로스"]:  # 데드 크로스는 매도 신호
+                    if not tech_record["골든_크로스"]:
                         technical_sell_signals += 1
                         tech_sell_signals_details.append("데드 크로스")
-                    
-                    if tech_record["RSI"] > 70:  # RSI 70 이상은 과매수 구간(매도 신호)
+
+                    if tech_record["RSI"] > settings.SELL_RSI_OVERBOUGHT:
                         technical_sell_signals += 1
                         tech_sell_signals_details.append(f"RSI 과매수({tech_record['RSI']:.2f})")
                     
@@ -621,11 +631,9 @@ class StockRecommendationService:
                 if ticker in sentiment_data:
                     sentiment_score = sentiment_data[ticker].get("average_sentiment_score")
                 
-                # 조건 3: 기술적 지표 중 3개 이상 매도 신호 (가장 강력한 매도 신호부터 체크)
-                if technical_sell_signals >= 3:
+                if technical_sell_signals >= settings.SELL_TECH_MIN_WITHOUT_SENTIMENT:
                     sell_reasons.append(f"모든 기술적 지표가 매도 신호: {', '.join(tech_sell_signals_details)}")
-                # 조건 2: 감성 점수 < -0.15이고 기술적 지표 중 2개 이상 매도 신호
-                elif sentiment_score is not None and sentiment_score < -0.15 and technical_sell_signals >= 2:
+                elif sentiment_score is not None and sentiment_score < settings.SELL_SENTIMENT_MAX and technical_sell_signals >= settings.SELL_TECH_MIN_WITH_SENTIMENT:
                     sell_reasons.append(f"부정적 감성({sentiment_score:.2f})과 기술적 매도 신호({technical_sell_signals}개): {', '.join(tech_sell_signals_details)}")
                 
                 # 매도 대상 판단
@@ -654,9 +662,7 @@ class StockRecommendationService:
             }
             
         except Exception as e:
-            print(f"매도 대상 종목 식별 중 오류 발생: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
+            logger.exception("매도 대상 종목 식별 실패: %s", e)
             return {
                 "message": f"매도 대상 종목 식별 중 오류 발생: {str(e)}",
                 "sell_candidates": []

@@ -1,6 +1,15 @@
+"""
+한국투자증권 잔고·예약주문·체결·주문 API 라우트.
+
+요청 본문은 Pydantic 모델로 검증하고 `balance_service` 에 위임한다.
+"""
+
+# ─── 모듈 임포트 ───
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from typing import Optional
+
 from app.core.config import settings
 from app.services.balance_service import (
     get_domestic_balance, 
@@ -17,6 +26,9 @@ from app.services.balance_service import (
 )
 
 router = APIRouter()
+
+# ─── 엔드포인트 핸들러 ───
+
 
 @router.get("/", summary="국내주식 잔고 조회")
 def read_balance():

@@ -15,6 +15,12 @@ function sortReducer(state: SortState, action: Action): SortState {
   return state
 }
 
+export type SortCell = string | number | null
+
+function isNullish(v: SortCell): boolean {
+  return v == null || (typeof v === 'number' && Number.isNaN(v))
+}
+
 function compareValues(a: string | number, b: string | number): number {
   if (typeof a === 'number' && typeof b === 'number') {
     return a === b ? 0 : a < b ? -1 : 1
@@ -24,10 +30,11 @@ function compareValues(a: string | number, b: string | number): number {
 
 /**
  * 테이블 컬럼 정렬. `accessors` 객체 레퍼런스는 렌더마다 바뀌지 않게 두는 것이 좋습니다(모듈 상수 또는 useMemo).
+ * accessor가 `null`이면 정렬 시 항상 맨 뒤로 둡니다.
  */
 export function useTableSort<T>(
   rows: T[],
-  accessors: Record<string, (row: T) => string | number>,
+  accessors: Record<string, (row: T) => SortCell>,
   initial?: { key: string; dir?: SortDirection },
 ) {
   const validKeys = useMemo(() => new Set(Object.keys(accessors)), [accessors])
@@ -49,7 +56,16 @@ export function useTableSort<T>(
     if (!key || !accessors[key]) return rows
     const get = accessors[key]
     const mul = dir === 'asc' ? 1 : -1
-    return [...rows].sort((a, b) => mul * compareValues(get(a), get(b)))
+    return [...rows].sort((a, b) => {
+      const va = get(a)
+      const vb = get(b)
+      const na = isNullish(va)
+      const nb = isNullish(vb)
+      if (na && nb) return 0
+      if (na) return 1
+      if (nb) return -1
+      return mul * compareValues(va as string | number, vb as string | number)
+    })
   }, [rows, state, accessors])
 
   return {

@@ -70,7 +70,15 @@ export async function fetchAllBalances(): Promise<KisOverseasBalance> {
       }
     }
   }
-  return { rt_cd: '0', output1: allHoldings, output2: summary, cashUsdBestEffort }
+  // 거래소별 조회 결과를 합칠 때 동일 티커가 중복되는 경우가 있음 (예: NASD·NYSE 모두 PEP)
+  const byTicker = new Map<string, KisHolding>()
+  for (const h of allHoldings) {
+    const sym = (h.ovrs_pdno || '').trim()
+    if (!sym) continue
+    if (!byTicker.has(sym)) byTicker.set(sym, h)
+  }
+  const deduped = [...byTicker.values()]
+  return { rt_cd: '0', output1: deduped, output2: summary, cashUsdBestEffort }
 }
 
 // ── Stocks / AI predictions ────────────────────────────────────────
@@ -192,6 +200,33 @@ export interface EconomicLatest {
 
 export const fetchEconomicLatest = () =>
   get<EconomicLatest>('/economic/latest')
+
+export interface EconomicHistoryRow {
+  date: string | null
+  data: Record<string, number | null>
+}
+
+export interface EconomicHistoryResponse {
+  items: EconomicHistoryRow[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export function fetchEconomicHistory(opts: {
+  dateFrom?: string
+  dateTo?: string
+  page?: number
+  pageSize?: number
+}) {
+  const q = new URLSearchParams()
+  if (opts.dateFrom) q.set('date_from', opts.dateFrom)
+  if (opts.dateTo) q.set('date_to', opts.dateTo)
+  q.set('page', String(opts.page ?? 1))
+  q.set('page_size', String(opts.pageSize ?? 10))
+  const qs = q.toString()
+  return get<EconomicHistoryResponse>(`/economic/history?${qs}`)
+}
 
 // ── Orders (NCCS) ─────────────────────────────────────────────────
 export interface NccsItem {

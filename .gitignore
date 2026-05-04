@@ -31,6 +31,9 @@ ENV/
 # uv
 .uv/
 
+# 로컬 상태 (EOD 리포트 중복 방지 등)
+.cache/
+
 # 테스트·도구
 .pytest_cache/
 .coverage

@@ -1,12 +1,22 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
 import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
-import Tooltip from '../../components/Tooltip'
+import CalendarDateField from '../../components/CalendarDateField'
+import SortableTh from '../../components/SortableTh'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
-import { fetchEconomicLatest } from '../../api'
+import { useTableSort } from '../../hooks/useTableSort'
+import { fetchEconomicHistory, type EconomicHistoryRow, type EconomicHistoryResponse } from '../../api'
 
-const PAGE_SIZE = 15
+const PAGE_SIZE = 10
+
+const emptyHistory = (): EconomicHistoryResponse => ({
+  items: [],
+  total: 0,
+  page: 1,
+  page_size: PAGE_SIZE,
+})
 
 const ECON: [string, string, string][] = [
   ['10년 기대 인플레이션율','10년 기대 인플레이션율','향후 10년 시장 평균 인플레이션 기대치 (FRED)'],
@@ -56,76 +66,273 @@ function fmtVal(v: number | null, key: string) {
   return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-const th = { padding: '10px 14px', fontSize: 12, fontWeight: 600, color: theme.onSurfaceVariant, borderBottom: `1px solid ${theme.outline}`, textAlign: 'left' as const, whiteSpace: 'nowrap' as const }
-const td = { padding: '11px 14px', fontSize: 14, borderBottom: `1px solid ${theme.surfaceContainer}`, color: theme.onSurface, fontVariantNumeric: 'tabular-nums' as const }
+function ymdLocal(d: Date) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
-function Grid({ rows, raw }: { rows: [string,string,string][]; raw: Record<string, number|null> }) {
-  const [page, setPage] = useState(0)
-  const total = Math.ceil(rows.length / PAGE_SIZE)
-  const slice = rows.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE)
+function defaultDateRange() {
+  const end = new Date()
+  const start = new Date(end)
+  start.setDate(start.getDate() - 90)
+  return { from: ymdLocal(start), to: ymdLocal(end) }
+}
+
+const tdSticky: CSSProperties = {
+  position: 'sticky',
+  left: 0,
+  zIndex: 1,
+  background: theme.surface,
+  fontWeight: 600,
+  boxShadow: `4px 0 8px -4px ${theme.outline}`,
+}
+
+const thBase: CSSProperties = { padding: '10px 12px', fontSize: 11, fontWeight: 600, color: theme.onSurfaceVariant, borderBottom: `1px solid ${theme.outline}`, whiteSpace: 'nowrap' }
+const tdBase: CSSProperties = { padding: '10px 12px', fontSize: 13, borderBottom: `1px solid ${theme.surfaceContainer}`, color: theme.onSurface, fontVariantNumeric: 'tabular-nums' }
+
+const thDateHead: CSSProperties = {
+  ...thBase,
+  position: 'sticky',
+  left: 0,
+  top: 0,
+  zIndex: 5,
+  background: theme.surface,
+  boxShadow: `4px 0 8px -4px ${theme.outline}, 0 1px 0 ${theme.outline}`,
+}
+const thColHead: CSSProperties = {
+  ...thBase,
+  position: 'sticky',
+  top: 0,
+  zIndex: 3,
+  background: theme.surface,
+  boxShadow: `0 1px 0 ${theme.outline}`,
+}
+
+const tableScrollBox: CSSProperties = {
+  maxHeight: 'min(380px, 48vh)',
+  overflow: 'auto',
+  border: `1px solid ${theme.outlineSoft}`,
+  borderRadius: theme.radiusMd,
+}
+
+function EconomicTable({
+  rows,
+  loading,
+  error,
+  colDefs,
+  awaitingQuery,
+}: {
+  rows: EconomicHistoryRow[]
+  loading: boolean
+  error: string | null
+  colDefs: [string, string, string][]
+  awaitingQuery: boolean
+}) {
+  const accessors = useMemo(() => {
+    const acc: Record<string, (r: EconomicHistoryRow) => string | number | null> = {
+      date: (r) => r.date ?? '',
+    }
+    for (const [key] of colDefs) {
+      acc[key] = (r) => {
+        const v = r.data[key]
+        if (v == null) return null
+        if (typeof v === 'number') return Number.isNaN(v) ? null : v
+        const n = Number(v)
+        return Number.isNaN(n) ? null : n
+      }
+    }
+    return acc
+  }, [colDefs])
+
+  const { sortedRows, sortKey, sortDir, requestSort } = useTableSort(rows, accessors, { key: 'date', dir: 'desc' })
+
   return (
-    <>
-      <div style={{ overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
+    <div style={{ ...tableScrollBox, opacity: loading ? 0.55 : 1, transition: 'opacity .15s' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: Math.max(640, 160 + colDefs.length * 88) }}>
+        <thead>
+          <tr>
+            <SortableTh
+              colId="date"
+              label="날짜"
+              align="left"
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={requestSort}
+              style={{ ...thDateHead, textAlign: 'left' }}
+              tip="DB에 저장된 해당 일자의 수집 스냅샷"
+            />
+            {colDefs.map(([key, label, tip]) => (
+              <SortableTh
+                key={key}
+                colId={key}
+                label={label}
+                align="right"
+                sortKey={sortKey}
+                sortDir={sortDir}
+                onSort={requestSort}
+                style={{ ...thColHead, textAlign: 'right' }}
+                tip={tip}
+              />
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {awaitingQuery && (
             <tr>
-              <th style={th}>지표명</th>
-              <th style={{ ...th, textAlign: 'right' }}>최신값</th>
+              <td colSpan={colDefs.length + 1} style={{ ...tdBase, textAlign: 'center', color: theme.onSurfaceVariant, padding: '28px 12px' }}>
+                시작일·종료일을 모두 선택한 뒤 <strong style={{ color: theme.onSurface }}>조회</strong>를 누르면 그리드가 채워집니다.
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {slice.map(([key, label, tip]) => (
-              <tr key={key} style={{ transition: 'background .12s' }} className="trader-list-row">
-                <td style={td}>
-                  <Tooltip tip={tip}>{label}</Tooltip>
-                </td>
-                <td style={{ ...td, textAlign: 'right', fontWeight: 700 }}>{fmtVal(raw[key] ?? null, key)}</td>
+          )}
+          {!awaitingQuery && !loading && !error && rows.length === 0 && (
+            <tr>
+              <td colSpan={colDefs.length + 1} style={{ ...tdBase, textAlign: 'center', color: theme.onSurfaceVariant }}>
+                해당 기간에 데이터가 없습니다.
+              </td>
+            </tr>
+          )}
+          {!awaitingQuery &&
+            sortedRows.map((row) => (
+              <tr key={row.date ?? ''} style={{ transition: 'background .12s' }} className="trader-list-row">
+                <td style={{ ...tdBase, ...tdSticky }}>{row.date ?? '—'}</td>
+                {colDefs.map(([key]) => (
+                  <td key={key} style={{ ...tdBase, textAlign: 'right', fontWeight: 600 }}>{fmtVal(row.data[key] ?? null, key)}</td>
+                ))}
               </tr>
             ))}
-          </tbody>
-        </table>
-      </div>
-      {total > 1 && (
-        <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginTop: 16 }}>
-          {Array.from({ length: total }).map((_, i) => (
-            <button key={i} onClick={() => setPage(i)} style={{
-              width: 32, height: 32, borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 700,
-              background: page === i ? theme.primary : theme.surfaceContainer,
-              color: page === i ? '#fff' : theme.onSurfaceVariant,
-            }}>{i + 1}</button>
-          ))}
-        </div>
-      )}
-    </>
+        </tbody>
+      </table>
+    </div>
   )
 }
 
 export default function Economic() {
+  const defaults = useMemo(() => defaultDateRange(), [])
   const [tab, setTab] = useState<'econ' | 'stock'>('econ')
-  const { data, loading, error } = useApi(fetchEconomicLatest)
-  const raw = (data?.data ?? {}) as Record<string, number | null>
+  const [draftFrom, setDraftFrom] = useState(defaults.from)
+  const [draftTo, setDraftTo] = useState(defaults.to)
+  const [appliedFrom, setAppliedFrom] = useState<string | null>(null)
+  const [appliedTo, setAppliedTo] = useState<string | null>(null)
+  const [filterHint, setFilterHint] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+
+  const queryActive = Boolean(appliedFrom && appliedTo)
+
+  const { data, loading, error } = useApi(
+    () => {
+      if (!appliedFrom || !appliedTo) return Promise.resolve(emptyHistory())
+      return fetchEconomicHistory({ dateFrom: appliedFrom, dateTo: appliedTo, page, pageSize: PAGE_SIZE })
+    },
+    [appliedFrom, appliedTo, page],
+  )
+
+  const rows = data?.items ?? []
+  const total = data?.total ?? 0
+  const awaitingQuery = !queryActive
+  const firstPageLoading = queryActive && loading && rows.length === 0
+  const totalPages = total <= 0 ? 0 : Math.ceil(total / PAGE_SIZE)
+  const colDefs = tab === 'econ' ? ECON : STOCK
+
+  const runQuery = () => {
+    const a = draftFrom.trim()
+    const b = draftTo.trim()
+    if (!a || !b) {
+      setFilterHint('시작일과 종료일을 모두 선택해 주세요.')
+      return
+    }
+    if (a > b) {
+      setFilterHint('시작일은 종료일보다 늦을 수 없습니다.')
+      return
+    }
+    setFilterHint(null)
+    setAppliedFrom(a)
+    setAppliedTo(b)
+    setPage(1)
+  }
 
   const tabBtn = (t: typeof tab, label: string) => (
-    <button onClick={() => setTab(t)} style={{ padding: '8px 18px', borderRadius: theme.radiusMd, fontSize: 13, fontWeight: 700, cursor: 'pointer', border: 'none', background: tab === t ? theme.primary : 'transparent', color: tab === t ? '#fff' : theme.onSurfaceVariant }}>
+    <button className="trader-btn" onClick={() => setTab(t)} style={{ padding: '8px 18px', borderRadius: theme.radiusMd, fontSize: 13, fontWeight: 700, cursor: 'pointer', border: 'none', background: tab === t ? theme.primary : 'transparent', color: tab === t ? '#fff' : theme.onSurfaceVariant }}>
       {label}
     </button>
   )
 
+  const subtitle = useMemo(() => {
+    if (!queryActive) {
+      return `선택: ${draftFrom} ~ ${draftTo} · 조회 시 필터 적용 · 페이지당 ${PAGE_SIZE}행`
+    }
+    const range = `${appliedFrom} ~ ${appliedTo}`
+    if (loading && data == null) return `${range} · 조회 중…`
+    if (loading && data) return `${range} · 총 ${total}일치 (갱신 중…)`
+    return `${range} · 총 ${total}일치 (날짜별 행) · 페이지당 ${PAGE_SIZE}행`
+  }, [queryActive, draftFrom, draftTo, appliedFrom, appliedTo, total, loading, data])
+
   return (
     <div style={{ padding: theme.pagePadding, fontFamily: theme.fontSans, minHeight: '100%' }}>
-      <PageHeader title="경제 지표" subtitle={data?.date ? `기준일: ${data.date} · 실제 수집 데이터` : '주요 거시 지표'} />
+      <PageHeader title="경제 지표" subtitle={subtitle} />
       {error && <div style={{ marginBottom: 16, color: theme.negative, fontSize: 14 }}>오류: {error}</div>}
-      <div style={{ display: 'flex', gap: 8, marginBottom: theme.gutter }}>
-        {tabBtn('econ', '경제 지표')}
-        {tabBtn('stock', '주요 자산 가격')}
+      {filterHint && <div style={{ marginBottom: 12, color: theme.negative, fontSize: 13 }}>{filterHint}</div>}
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end', marginBottom: theme.gutter }}>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {tabBtn('econ', '경제 지표')}
+          {tabBtn('stock', '주요 자산 가격')}
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end', marginLeft: 'auto' }}>
+          <CalendarDateField label="시작일" value={draftFrom} onChange={setDraftFrom} />
+          <CalendarDateField label="종료일" value={draftTo} onChange={setDraftTo} />
+          <button
+            type="button"
+            className="trader-btn"
+            onClick={runQuery}
+            style={{
+              padding: '10px 22px',
+              borderRadius: theme.radiusMd,
+              fontSize: 14,
+              fontWeight: 700,
+              cursor: 'pointer',
+              border: 'none',
+              background: theme.primary,
+              color: '#fff',
+              alignSelf: 'flex-end',
+            }}
+          >
+            조회
+          </button>
+        </div>
       </div>
-      {loading ? (
-        <div style={{ padding: 32, textAlign: 'center', color: theme.onSurfaceVariant }}>로딩 중…</div>
-      ) : (
-        <Card title={tab === 'econ' ? `경제 지표 (${ECON.length}개)` : `주요 자산 (${STOCK.length}개)`}>
-          <Grid rows={tab === 'econ' ? ECON : STOCK} raw={raw} />
-        </Card>
-      )}
+
+      <Card title={tab === 'econ' ? `경제 지표 (${colDefs.length}열)` : `주요 자산 (${colDefs.length}열)`}>
+        {firstPageLoading ? (
+          <div style={{ padding: 32, textAlign: 'center', color: theme.onSurfaceVariant }}>로딩 중…</div>
+        ) : (
+          <>
+            {queryActive && loading && rows.length > 0 && (
+              <div style={{ fontSize: 12, color: theme.onSurfaceVariant, marginBottom: 8 }}>불러오는 중…</div>
+            )}
+            <EconomicTable key={tab} rows={rows} loading={loading} error={error} colDefs={colDefs} awaitingQuery={awaitingQuery} />
+
+            {queryActive && totalPages > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'center', marginTop: 18, paddingTop: 8 }}>
+                <button type="button" className="trader-btn" disabled={page <= 1 || loading} onClick={() => setPage((p) => Math.max(1, p - 1))} style={{
+                  padding: '8px 16px', borderRadius: 8, border: 'none', cursor: page <= 1 || loading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700,
+                  opacity: page <= 1 || loading ? 0.45 : 1,
+                  background: theme.surfaceContainer, color: theme.onSurface,
+                }}>이전</button>
+                <span style={{ fontSize: 13, color: theme.onSurfaceVariant, fontVariantNumeric: 'tabular-nums' }}>
+                  {page} / {totalPages} 페이지 · 페이지당 {PAGE_SIZE}일
+                </span>
+                <button type="button" className="trader-btn" disabled={page >= totalPages || loading} onClick={() => setPage((p) => Math.min(totalPages, p + 1))} style={{
+                  padding: '8px 16px', borderRadius: 8, border: 'none', cursor: page >= totalPages || loading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700,
+                  opacity: page >= totalPages || loading ? 0.45 : 1,
+                  background: theme.surfaceContainer, color: theme.onSurface,
+                }}>다음</button>
+              </div>
+            )}
+          </>
+        )}
+      </Card>
     </div>
   )
 }

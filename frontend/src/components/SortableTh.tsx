@@ -1,5 +1,6 @@
 import type { CSSProperties, KeyboardEvent } from 'react'
 import type { SortDirection } from '../hooks/useTableSort'
+import Tooltip from './Tooltip'
 
 type Align = 'left' | 'right' | 'center'
 
@@ -61,11 +62,12 @@ export default function SortableTh({
         }}
       >
         {tip ? (
-          <span className="tt tt-below" style={{ cursor: 'pointer' }}>
+          <Tooltip tip={tip} placement="below">
             {label}
-            <span className="tt-b">{tip}</span>
-          </span>
-        ) : label}
+          </Tooltip>
+        ) : (
+          label
+        )}
         <span
           aria-hidden
           style={{

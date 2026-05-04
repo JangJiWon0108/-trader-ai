@@ -1,5 +1,16 @@
+"""
+주식 분석·갱신 API용 Pydantic 모델.
+
+예측 행 표현(StockPrediction)과 배치 갱신 응답(UpdateResponse)만 정의한다.
+"""
+
+# ─── 모듈 임포트 ───
+from typing import Optional
+
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+
+# ─── 스키마 정의 ───
+
 
 class StockPrediction(BaseModel):
     stock: str
@@ -8,6 +19,7 @@ class StockPrediction(BaseModel):
     rise_probability: float
     recommendation: str
     analysis: Optional[str] = None
+
 
 class UpdateResponse(BaseModel):
     success: bool

@@ -1,20 +1,37 @@
-import requests
+"""
+한국투자증권(KIS) REST API 연동: 토큰·잔고·주문·예약·체결 조회 등.
+
+`app.api.routes.balance` 및 스케줄러에서 호출된다. 토큰은 메모리·Supabase 와
+1분당 갱신 제한을 함께 사용한다.
+"""
+
+# ─── 모듈 임포트 ───
 import json
+import logging
 import time
 from datetime import datetime, timedelta
+from threading import Lock
+
 import pytz
+import requests
+
 from app.core.config import settings
 from app.db.supabase import supabase
-from threading import Lock
 from app.services.auth_service import parse_expiration_date
 
-# 메모리에 토큰 정보 저장 (캐싱)
+logger = logging.getLogger(__name__)
+
+# ─── 상수 정의 (토큰 캐시) ───
+
 _token_cache = {
     "access_token": None,
     "expires_at": None
 }
 _last_refresh_time = 0  # 마지막 토큰 갱신 시간
-_refresh_lock = Lock()  # 동시성 방지 락
+_refresh_lock = Lock()
+
+# ─── 공개 API ───
+
 
 def get_access_token():
     """한국투자증권 API 접근 토큰 발급 또는 캐시된 토큰 반환"""
@@ -25,20 +42,20 @@ def get_access_token():
     
     # 메모리에 캐시된 토큰이 있고 유효하면 그것을 사용
     if _token_cache["access_token"] and _token_cache["expires_at"] and now < _token_cache["expires_at"]:
-        print("메모리에 캐시된 토큰 사용")
+        logger.info("메모리에 캐시된 토큰 사용")
         return _token_cache["access_token"]
     
     # 1분 제한 체크 및 락 획득
     current_time = time.time()
     if current_time - _last_refresh_time < 60:
         time_to_wait = 60 - (current_time - _last_refresh_time)
-        print(f"1분 제한으로 {time_to_wait:.1f}초 대기")
+        logger.info(f"1분 제한으로 {time_to_wait:.1f}초 대기")
         time.sleep(time_to_wait)
     
     with _refresh_lock:  # 동시성 방지
         # 락 획득 후 다시 캐시 확인
         if _token_cache["access_token"] and _token_cache["expires_at"] and now < _token_cache["expires_at"]:
-            print("락 내에서 캐시된 토큰 사용")
+            logger.info("락 내에서 캐시된 토큰 사용")
             return _token_cache["access_token"]
         
         try:
@@ -52,13 +69,13 @@ def get_access_token():
                 expiration_time = parse_expiration_date(token_data["expiration_time"])
                 
                 if now < expiration_time:  # 토큰이 아직 유효한 경우
-                    print(f"기존 토큰 사용 - 만료까지 남은 시간: {(expiration_time - now)}")
+                    logger.info(f"기존 토큰 사용 - 만료까지 남은 시간: {(expiration_time - now)}")
                     _token_cache["access_token"] = token_data["access_token"]
                     _token_cache["expires_at"] = expiration_time
                     _last_refresh_time = current_time
                     return token_data["access_token"]
                 
-                print("토큰 만료됨, 갱신 필요")
+                logger.info("토큰 만료됨, 갱신 필요")
                 # 토큰이 만료된 경우 갱신
                 token = refresh_token_with_retry(token_data["id"])
                 _token_cache["access_token"] = token
@@ -66,7 +83,7 @@ def get_access_token():
                 _last_refresh_time = current_time
                 return token
             else:
-                print("토큰 레코드 없음, 새로 생성")
+                logger.info("토큰 레코드 없음, 새로 생성")
                 token = refresh_token_with_retry()
                 _token_cache["access_token"] = token
                 _token_cache["expires_at"] = now + timedelta(days=1)
@@ -74,9 +91,9 @@ def get_access_token():
                 return token
                 
         except Exception as e:
-            print(f"토큰 조회 오류: {str(e)}")
+            logger.info(f"토큰 조회 오류: {str(e)}")
             if _token_cache["access_token"]:
-                print("DB 조회 오류 - 메모리에 캐시된 토큰 사용")
+                logger.info("DB 조회 오류 - 메모리에 캐시된 토큰 사용")
                 return _token_cache["access_token"]
             raise Exception(f"토큰 발급 실패: {str(e)}")
 
@@ -111,17 +128,17 @@ def refresh_token_with_retry(record_id=None, max_retries=3):
             # 레코드 ID가 있으면 업데이트, 없으면 새로 생성
             if record_id:
                 supabase.table("access_tokens").update(token_data).eq("id", record_id).execute()
-                print("토큰 업데이트 완료")
+                logger.info("토큰 업데이트 완료")
             else:
                 supabase.table("access_tokens").insert(token_data).execute()
-                print("새 토큰 레코드 생성 완료")
+                logger.info("새 토큰 레코드 생성 완료")
             
             return access_token
             
         except Exception as e:
-            print(f"토큰 갱신 오류 (시도 {attempt+1}/{max_retries}): {str(e)}")
+            logger.info(f"토큰 갱신 오류 (시도 {attempt+1}/{max_retries}): {str(e)}")
             if "EGW00133" in str(e) and attempt < max_retries - 1:
-                print("1분 제한 에러 발생, 61초 대기 후 재시도")
+                logger.info("1분 제한 에러 발생, 61초 대기 후 재시도")
                 time.sleep(61)  # 1분 이상 대기
             else:
                 raise
@@ -164,7 +181,7 @@ def get_domestic_balance():
             
             # API 응답에 오류가 있고, 재시도 가능한 경우
             if 'rt_cd' in result and result['rt_cd'] != '0' and attempt < max_retries - 1:
-                print(f"API 오류: {result['msg_cd']} - {result.get('msg1', '알 수 없는 오류')}. 토큰 갱신 후 재시도...")
+                logger.info(f"API 오류: {result['msg_cd']} - {result.get('msg1', '알 수 없는 오류')}. 토큰 갱신 후 재시도...")
                 # 토큰 강제 갱신 후 재시도
                 access_token = get_access_token()
                 headers["authorization"] = f"Bearer {access_token}"
@@ -174,7 +191,7 @@ def get_domestic_balance():
             return result
             
         except Exception as e:
-            print(f"잔고 조회 중 오류 발생 (시도 {attempt+1}/{max_retries}): {str(e)}")
+            logger.info(f"잔고 조회 중 오류 발생 (시도 {attempt+1}/{max_retries}): {str(e)}")
             if attempt < max_retries - 1:
                 time.sleep(1)  # 재시도 전 1초 대기
             else:
@@ -218,7 +235,7 @@ def get_overseas_balance(ovrs_excg_cd="NASD"):
             
             # API 응답에 오류가 있고, 재시도 가능한 경우
             if 'rt_cd' in result and result['rt_cd'] != '0' and attempt < max_retries - 1:
-                print(f"API 오류: {result['msg_cd']} - {result.get('msg1', '알 수 없는 오류')}. 토큰 갱신 후 재시도...")
+                logger.info(f"API 오류: {result['msg_cd']} - {result.get('msg1', '알 수 없는 오류')}. 토큰 갱신 후 재시도...")
                 # 토큰 강제 갱신 후 재시도
                 access_token = get_access_token()
                 headers["authorization"] = f"Bearer {access_token}"
@@ -228,7 +245,7 @@ def get_overseas_balance(ovrs_excg_cd="NASD"):
             return result
             
         except Exception as e:
-            print(f"잔고 조회 중 오류 발생 (시도 {attempt+1}/{max_retries}): {str(e)}")
+            logger.info(f"잔고 조회 중 오류 발생 (시도 {attempt+1}/{max_retries}): {str(e)}")
             if attempt < max_retries - 1:
                 time.sleep(1)  # 재시도 전 1초 대기
             else:
@@ -249,21 +266,32 @@ def get_all_overseas_balances():
                 if holdings:
                     all_holdings.extend(holdings)
             else:
-                print(f"{exchange} 거래소 잔고 조회 실패: {result.get('msg1', '알 수 없는 오류')}")
+                logger.info(f"{exchange} 거래소 잔고 조회 실패: {result.get('msg1', '알 수 없는 오류')}")
                 
             # API 요청 간 지연
             time.sleep(0.5)
             
         except Exception as e:
-            print(f"{exchange} 거래소 잔고 조회 중 오류: {str(e)}")
+            logger.info(f"{exchange} 거래소 잔고 조회 중 오류: {str(e)}")
     
+    # 동일 종목이 NASD/NYSE/AMEX 각 조회에 중복 포함되는 경우 제거 (첫 조회 순서 유지)
+    seen_pdno = set()
+    deduped_holdings = []
+    for h in all_holdings:
+        pdno = (h.get("ovrs_pdno") or "").strip()
+        if pdno:
+            if pdno in seen_pdno:
+                continue
+            seen_pdno.add(pdno)
+        deduped_holdings.append(h)
+
     # 통합된 잔고 정보 반환
-    if all_holdings:
+    if deduped_holdings:
         return {
             "rt_cd": "0",
             "msg_cd": "00000",
             "msg1": "모든 거래소 잔고 조회 완료",
-            "output1": all_holdings,
+            "output1": deduped_holdings,
             "output2": {}  # 합산 정보는 필요시 계산
         }
     else:
@@ -271,7 +299,7 @@ def get_all_overseas_balances():
             "rt_cd": "0",
             "msg_cd": "00000",
             "msg1": "보유 종목이 없습니다.",
-            "output1": [],
+            "output1": deduped_holdings,
             "output2": {}
         }
 
@@ -323,7 +351,7 @@ def overseas_order_resv(order_data):
         
         return result
     except Exception as e:
-        print(f"예약주문 접수 중 오류 발생: {str(e)}")
+        logger.info(f"예약주문 접수 중 오류 발생: {str(e)}")
         raise
 
 def inquire_psamount(params):
@@ -365,7 +393,7 @@ def inquire_psamount(params):
         
         return result
     except Exception as e:
-        print(f"매수가능금액 조회 중 오류 발생: {str(e)}")
+        logger.info(f"매수가능금액 조회 중 오류 발생: {str(e)}")
         raise
 
 # 추가: 해외주식 현재체결가 조회
@@ -387,7 +415,7 @@ def get_current_price(params):
         
         return result
     except Exception as e:
-        print(f"현재체결가 조회 중 오류 발생: {str(e)}")
+        logger.info(f"현재체결가 조회 중 오류 발생: {str(e)}")
         raise
 
 def get_overseas_nccs(params):
@@ -418,7 +446,7 @@ def get_overseas_nccs(params):
         
         return result
     except Exception as e:
-        print(f"미체결내역 조회 중 오류 발생: {str(e)}")
+        logger.info(f"미체결내역 조회 중 오류 발생: {str(e)}")
         raise
 
 def _normalize_order_inquiry_output(result: dict) -> dict:
@@ -453,13 +481,13 @@ def get_overseas_order_detail(params, *, only_unfilled_pending: bool = False):
             "tr_id": tr_id,
         }
         
-        print(f"API 요청: {url}")
-        print(f"파라미터: {params}")
+        logger.info(f"API 요청: {url}")
+        logger.info(f"파라미터: {params}")
         
         response = requests.get(url, headers=headers, params=params)
         
-        print(f"API 응답 상태 코드: {response.status_code}")
-        print(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
+        logger.info(f"API 응답 상태 코드: {response.status_code}")
+        logger.info(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
         
         if response.status_code == 404:
             return {
@@ -496,7 +524,7 @@ def get_overseas_order_detail(params, *, only_unfilled_pending: bool = False):
                 "output": []
             }
     except Exception as e:
-        print(f"주문체결내역 조회 중 오류 발생: {str(e)}")
+        logger.info(f"주문체결내역 조회 중 오류 발생: {str(e)}")
         return {
             "rt_cd": "0", 
             "msg_cd": "ERROR",
@@ -603,13 +631,13 @@ def get_overseas_order_resv_list(params):
         }
         
         # 디버깅 정보
-        print(f"예약주문조회 API 요청: {url}")
-        print(f"파라미터: {params}")
+        logger.info(f"예약주문조회 API 요청: {url}")
+        logger.info(f"파라미터: {params}")
         
         response = requests.get(url, headers=headers, params=params)
         
         # 응답 확인
-        print(f"API 응답 상태 코드: {response.status_code}")
+        logger.info(f"API 응답 상태 코드: {response.status_code}")
         
         if response.status_code != 200:
             return {
@@ -638,7 +666,7 @@ def get_overseas_order_resv_list(params):
                 "output": []
             }
     except Exception as e:
-        print(f"예약주문조회 중 오류 발생: {str(e)}")
+        logger.info(f"예약주문조회 중 오류 발생: {str(e)}")
         return {
             "rt_cd": "1", 
             "msg_cd": "ERROR",
@@ -735,26 +763,42 @@ def order_overseas_stock(order_data):
             request_body["ORD_DVSN"] = "00"  # 지정가
         
         # 디버깅 정보 출력
-        print(f"해외주식 주문 API 요청: {url}")
-        print(f"헤더: {headers}")
-        print(f"요청 본문: {request_body}")
+        logger.info(f"해외주식 주문 API 요청: {url}")
+        logger.info(f"헤더: {headers}")
+        logger.info(f"요청 본문: {request_body}")
         
         # API 호출
         response = requests.post(url, headers=headers, json=request_body)
         
         # 응답 확인
-        print(f"API 응답 상태 코드: {response.status_code}")
-        print(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
+        logger.info(f"API 응답 상태 코드: {response.status_code}")
+        logger.info(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
         
-        # 응답 처리
+        # 응답 처리: 모의투자 등에서 HTTP 500과 함께 KIS 표준 JSON(rt_cd 포함)이 오는 경우가 있어 본문을 우선 해석한다.
+        if response.text:
+            try:
+                result = response.json()
+                if isinstance(result, dict) and "rt_cd" in result:
+                    return result
+            except ValueError:
+                pass
+
         if response.status_code != 200:
             return {
                 "rt_cd": "1",
                 "msg_cd": f"HTTP_{response.status_code}",
                 "msg1": f"API 호출 실패: HTTP {response.status_code}",
-                "output": {}
+                "output": {},
             }
-        
+
+        if not response.text:
+            return {
+                "rt_cd": "1",
+                "msg_cd": "EMPTY",
+                "msg1": "응답 본문이 비어 있습니다.",
+                "output": {},
+            }
+
         try:
             result = response.json()
             # 주문 내역을 DB에 저장 (옵션)
@@ -765,12 +809,10 @@ def order_overseas_stock(order_data):
                 "rt_cd": "1",
                 "msg_cd": "PARSEERR",
                 "msg1": "응답 파싱 오류",
-                "output": {}
+                "output": {},
             }
     except Exception as e:
-        print(f"해외주식 주문 중 오류 발생: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
+        logger.exception("해외주식 주문 실패: %s", e)
         return {
             "rt_cd": "1", 
             "msg_cd": "ERROR",
@@ -891,9 +933,7 @@ def create_conditional_orders(params):
         }
         
     except Exception as e:
-        print(f"조건부 주문 생성 중 오류 발생: {str(e)}")
-        import traceback
-        print(traceback.format_exc())
+        logger.exception("조건부 주문 생성 실패: %s", e)
         return {
             "rt_cd": "1",
             "msg_cd": "ERROR",

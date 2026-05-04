@@ -56,17 +56,20 @@ function nyTodayYmd() {
   return `${yy}${mm}${dd}`
 }
 
-function todayFilledCashflowUsd(rows: OrderFillRow[]): number {
+/** KIS: 매수 02(외화 지출), 매도 01(외화 입금) — balance_service 주문과 동일 */
+function nyTodayFilledCashflowUsd(rows: OrderFillRow[]): { usd: number; hadAnyTodayFill: boolean } {
   const today = nyTodayYmd()
   let usd = 0
+  let hadAnyTodayFill = false
   for (const row of rows) {
     if (row.ord_dt !== today) continue
+    hadAnyTodayFill = true
     const amt = parseFloat(row.ft_ccld_amt3 || '0')
     if (isNaN(amt)) continue
     if (row.sll_buy_dvsn_cd === '02') usd -= amt
     else if (row.sll_buy_dvsn_cd === '01') usd += amt
   }
-  return usd
+  return { usd, hadAnyTodayFill }
 }
 
 function sortFillsDesc(rows: OrderFillRow[]): OrderFillRow[] {
@@ -143,6 +146,30 @@ function scoreOf(r: CombinedRecommendation) {
   return r.composite_score ?? r.rise_probability ?? r.accuracy ?? 0
 }
 
+/** KIS `frcr_buy_amt_smtl1`이 비는 경우가 있어, 포트폴리오와 같이 평단×수량으로 보완 */
+function lineCostUsd(h: KisHolding): number {
+  const fromApi = parseFloat(h.frcr_buy_amt_smtl1 || '0')
+  if (!isNaN(fromApi) && fromApi > 0) return fromApi
+  const qty = parseFloat(h.ovrs_cblc_qty || '0')
+  const avg = parseFloat(h.pchs_avg_pric || '0')
+  if (isNaN(qty) || isNaN(avg)) return 0
+  return qty * avg
+}
+
+function lineEvalUsd(h: KisHolding): number {
+  const qty = parseFloat(h.ovrs_cblc_qty || '0')
+  const price = parseFloat(h.now_pric2 || '0')
+  if (isNaN(qty) || isNaN(price)) return 0
+  return qty * price
+}
+
+/** 증권사 평가손익(USD) 우선, 없으면 평가−매입 — 상단 카드·표와 동일 기준 */
+function linePnlUsd(h: KisHolding): number {
+  const kis = parseFloat(h.frcr_evlu_pfls_amt || '')
+  if (!isNaN(kis)) return kis
+  return lineEvalUsd(h) - lineCostUsd(h)
+}
+
 export default function Dashboard() {
   const balance = useApi(fetchAllBalances)
   const recommendations = useApi(fetchCombinedRecommendations)
@@ -152,24 +179,21 @@ export default function Dashboard() {
   const holdings: KisHolding[] = balance.data?.output1 ?? []
   const cashUsd = balance.data?.cashUsdBestEffort ?? 0
 
-  const totalCost = holdings.reduce((s, h) => s + parseFloat(h.frcr_buy_amt_smtl1 || '0'), 0)
-  const totalEval = holdings.reduce((s, h) => {
-    const qty = parseFloat(h.ovrs_cblc_qty || '0')
-    const price = parseFloat(h.now_pric2 || '0')
-    return s + qty * price
-  }, 0)
-  const totalPnl = totalEval - totalCost
+  const totalCost = holdings.reduce((s, h) => s + lineCostUsd(h), 0)
+  const totalEval = holdings.reduce((s, h) => s + lineEvalUsd(h), 0)
+  const totalPnl = holdings.reduce((s, h) => s + linePnlUsd(h), 0)
   const totalPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
   const totalAssets = totalEval + (cashUsd > 0 ? cashUsd : 0)
 
-  const todayFlow = useMemo(() => todayFilledCashflowUsd(fills.data?.output ?? []), [fills.data])
+  const todayCash = useMemo(() => nyTodayFilledCashflowUsd(fills.data?.output ?? []), [fills.data])
+  const todayFlow = todayCash.usd
   const todayPct = totalAssets > 0 ? (todayFlow / totalAssets) * 100 : 0
 
   const tickers = holdings.map((h) => h.ovrs_pdno).filter(Boolean)
   const winStats = useMemo(() => {
     const withQty = holdings.filter((h) => parseFloat(h.ovrs_cblc_qty || '0') > 0)
     if (!withQty.length) return { rate: null as number | null, n: 0, w: 0 }
-    const w = withQty.filter((h) => parseFloat(h.evlu_pfls_rt || '0') > 0).length
+    const w = withQty.filter((h) => linePnlUsd(h) > 0).length
     return { rate: (w / withQty.length) * 100, n: withQty.length, w }
   }, [holdings])
 
@@ -228,7 +252,12 @@ export default function Dashboard() {
         </Card>
 
         <Card
-          title={<Tooltip tip="미국 현지일 기준 당일 체결된 매수·매도의 외화 순현금흐름(참고 지표)">오늘의 손익 (USD/%)</Tooltip>}
+          title={
+            <Tooltip tip="뉴욕 거래일 기준 당일 체결된 매수·매도의 외화 순현금(매수는 지출·매도는 입금). 전일 종가 대비 평가 변동이나 매입 대비 누적 손익과는 다릅니다.">
+              당일 체결 현금 (USD/%)
+            </Tooltip>
+          }
+          subtitle="장중 평가 손익 아님 · 미체결 제외"
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
             <div>
@@ -244,14 +273,28 @@ export default function Dashboard() {
                 {fills.loading ? '로딩 중…' : `${todayFlow >= 0 ? '+' : ''}$${fmt(Math.abs(todayFlow))}`}
               </div>
               <div style={{ marginTop: 8, fontSize: 13, fontWeight: 700, color: todayPct >= 0 ? theme.positive : theme.negative }}>
-                {fills.loading ? '…' : fmtPct(todayPct)}
+                {fills.loading
+                  ? '…'
+                  : !todayCash.hadAnyTodayFill
+                    ? (
+                        <span style={{ fontWeight: 600, color: theme.onSurfaceVariant }}>
+                          뉴욕일 당일 체결 없음
+                        </span>
+                      )
+                    : fmtPct(todayPct)}
               </div>
             </div>
             <Sparkline points={[0.55, 0.52, 0.58, 0.6, 0.57, 0.62, 0.65]} positive={todayFlow >= 0} />
           </div>
         </Card>
 
-        <Card title={<Tooltip tip="매입 대비 보유 종목 평가 손익률">총 수익률 (%)</Tooltip>}>
+        <Card
+          title={
+            <Tooltip tip="보유 종목의 매입(증권사 매입합계, 비어 있으면 평단×수량) 대비 평가금액(현재가×수량) 손익률입니다.">
+              총 수익률 (%)
+            </Tooltip>
+          }
+        >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
             <div>
               <div
@@ -337,7 +380,7 @@ export default function Dashboard() {
         </Card>
 
         <Card
-          title={<Tooltip tip="현재 보유 종목 중 평가손익률이 양수인 종목 비율(체결 매매 승률과는 다를 수 있음)">승률 (%)</Tooltip>}
+          title={<Tooltip tip="보유 종목 중 평가손익(금액)이 0보다 큰 종목 비율(체결 매매 승률과는 다름)">승률 (%)</Tooltip>}
         >
           <div
             style={{
@@ -431,11 +474,11 @@ export default function Dashboard() {
                     ['수량', '보유 주식 수 (주)', 'right'],
                     ['평단', '매입 평균 단가 (USD)', 'right'],
                     ['현재가', '현재 실시간 체결가 (USD)', 'right'],
-                    ['손익', '(현재가 - 평단) / 평단 × 100', 'right'],
+                    ['손익', '매입(평단×수량 등) 대비 평가 손익률 · 상단 총 수익률과 동일 산식', 'right'],
                   ] as [string, string, string][]
                 ).map(([h, tip, align]) => (
                   <th key={h} style={{ ...cell, fontWeight: 700, textAlign: align as 'left' | 'right' }}>
-                    {tip ? <Tooltip tip={tip} below>{h}</Tooltip> : h}
+                    {tip ? <Tooltip tip={tip}>{h}</Tooltip> : h}
                   </th>
                 ))}
               </tr>
@@ -453,8 +496,9 @@ export default function Dashboard() {
                 </tr>
               )}
               {holdings.map((h) => {
-                const pnlPct = parseFloat(h.evlu_pfls_rt || '0')
-                const pnlAmt = parseFloat(h.frcr_evlu_pfls_amt || '0')
+                const cost = lineCostUsd(h)
+                const pnlAmt = linePnlUsd(h)
+                const pnlPct = cost > 0 ? (pnlAmt / cost) * 100 : parseFloat(h.evlu_pfls_rt || '0')
                 return (
                   <tr key={h.ovrs_pdno} style={{ color: theme.onSurface }}>
                     <td style={{ ...cell, fontWeight: 700 }}>{h.ovrs_pdno}</td>

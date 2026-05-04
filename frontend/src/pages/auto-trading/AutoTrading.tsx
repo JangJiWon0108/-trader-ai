@@ -56,6 +56,7 @@ function ActionBtn({
     <button
       disabled={disabled}
       onClick={onClick}
+      className="trader-btn"
       style={{
         padding: '8px 16px',
         borderRadius: theme.radiusMd,

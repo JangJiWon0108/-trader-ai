@@ -1,10 +1,21 @@
-import requests
-import pandas as pd
-import yfinance as yf
-from datetime import datetime, timedelta
-import numpy as np
+"""
+경제 지표(FRED)·주가(yfinance) 수집. 루트 스크립트 및 `economic_service` 에서 사용.
+
+`collect_economic_data` 가 핵심 진입점이다.
+"""
+
+# ─── 모듈 임포트 ───
 import time
+from datetime import datetime, timedelta
+
+import numpy as np
+import pandas as pd
+import requests
+import yfinance as yf
+
 from app.core.config import settings
+
+# ─── 설정 로드 ───
 
 api_key = settings.FRED_API_KEY
 
