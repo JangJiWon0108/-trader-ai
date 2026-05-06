@@ -6,22 +6,7 @@ import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
 import { fetchOrderHistory, type OrderHistoryItem } from '../../api'
 import { tdBase, thColHead, tableScrollBox, monoFont } from '../../components/gridTableStyles'
-
-function formatKst(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString('ko-KR', {
-    timeZone: 'Asia/Seoul',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  })
-}
+import { formatKstDateTime } from '../../utils/time'
 
 type HistoryRow = OrderHistoryItem & {
   _reason: string
@@ -129,7 +114,7 @@ export default function Orders() {
                 const isBuy = String(o.side).toLowerCase().includes('buy') || String(o.side).includes('매수')
                 return (
                   <tr key={o.id}>
-                    <td style={{ ...tdBase, fontFamily: monoFont, fontSize: 11 }}>{formatKst(o.kst_at)}</td>
+                    <td style={{ ...tdBase, fontFamily: monoFont, fontSize: 11 }}>{formatKstDateTime(o.kst_at)}</td>
                     <td style={{ ...tdBase, fontWeight: 900, color: isBuy ? theme.positive : theme.negative }}>{o.side ?? '—'}</td>
                     <td style={{ ...tdBase, fontWeight: 800 }}>{o.ticker ?? '—'}</td>
                     <td style={{ ...tdBase, fontSize: 12 }}>{o.stock_name ?? '—'}</td>

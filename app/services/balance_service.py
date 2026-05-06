@@ -256,6 +256,8 @@ def get_all_overseas_balances():
     # 주요 거래소 목록
     exchanges = ["NASD", "NYSE", "AMEX"]
     all_holdings = []
+    output2_best: dict = {}
+    cash_usd_best = 0.0
     
     for exchange in exchanges:
         try:
@@ -265,6 +267,17 @@ def get_all_overseas_balances():
                 holdings = result.get("output1", [])
                 if holdings:
                     all_holdings.extend(holdings)
+                # output2(예수금/주문가능외화 등) best-effort 수집
+                o2 = result.get("output2") or {}
+                if isinstance(o2, dict) and o2:
+                    output2_best = o2
+                    for k in ("frcr_ord_psbl_amt1", "ovrs_ord_psbl_amt", "ord_psbl_frcr_amt"):
+                        try:
+                            v = float(str(o2.get(k) or "0") or "0")
+                        except Exception:
+                            v = 0.0
+                        if v > cash_usd_best:
+                            cash_usd_best = v
             else:
                 logger.info(f"{exchange} 거래소 잔고 조회 실패: {result.get('msg1', '알 수 없는 오류')}")
                 
@@ -292,7 +305,8 @@ def get_all_overseas_balances():
             "msg_cd": "00000",
             "msg1": "모든 거래소 잔고 조회 완료",
             "output1": deduped_holdings,
-            "output2": {}  # 합산 정보는 필요시 계산
+            "output2": output2_best,
+            "cash_usd_best_effort": cash_usd_best,
         }
     else:
         return {
@@ -300,7 +314,8 @@ def get_all_overseas_balances():
             "msg_cd": "00000",
             "msg1": "보유 종목이 없습니다.",
             "output1": deduped_holdings,
-            "output2": {}
+            "output2": output2_best,
+            "cash_usd_best_effort": cash_usd_best,
         }
 
 # 추가: 해외주식 예약주문 접수
@@ -395,6 +410,68 @@ def inquire_psamount(params):
     except Exception as e:
         logger.info(f"매수가능금액 조회 중 오류 발생: {str(e)}")
         raise
+
+
+def _get_cash_usd_via_psamount_best_effort(*, ovrs_excg_cd: str = "NASD") -> float | None:
+    """
+    KIS '해외주식 매수가능금액 조회'를 이용해 주문가능 외화(USD)를 best-effort로 계산한다.
+
+    - 해외 잔고조회(output2)에 현금 필드가 비어있거나 불안정한 경우가 있어 보완용으로 사용한다.
+    - ovrs_ord_unpr=1(USD) 같은 작은 값으로 조회하면 충분하다.
+    """
+    try:
+        r = inquire_psamount(
+            {
+                "CANO": settings.KIS_CANO,
+                "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+                "OVRS_EXCG_CD": ovrs_excg_cd,
+                "ITEM_CD": "AAPL",
+                "OVRS_ORD_UNPR": "1",
+            }
+        )
+        if not isinstance(r, dict) or r.get("rt_cd") != "0":
+            return None
+        out = r.get("output") or {}
+        if not isinstance(out, dict):
+            return None
+
+        def _f(k: str) -> float:
+            try:
+                return float(str(out.get(k) or "0").strip() or "0")
+            except Exception:
+                return 0.0
+
+        vals = [
+            _f("ord_psbl_frcr_amt"),
+            _f("ovrs_ord_psbl_amt"),
+            _f("frcr_ord_psbl_amt1"),
+            _f("echm_af_ord_psbl_amt"),
+        ]
+        best = max(vals) if vals else 0.0
+        return best if best > 0 else None
+    except Exception:
+        return None
+
+
+def sync_cash_usd_to_db(*, ovrs_excg_cd: str = "NASD") -> bool:
+    """KIS 매수가능금액조회 기반 현금(USD) → holdings_summary.cash_usd 동기화."""
+    try:
+        cash = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd=ovrs_excg_cd)
+        if cash is None or cash <= 0:
+            return False
+        supabase.table("holdings_summary").upsert(
+            {
+                "id": "main",
+                "cash_usd": float(cash),
+                "output2": {"cash_source": "psamount", "ovrs_excg_cd": ovrs_excg_cd},
+                "synced_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="id",
+        ).execute()
+        return True
+    except Exception:
+        logger.warning("현금(USD) psamount 동기화 실패", exc_info=True)
+        return False
 
 # 추가: 해외주식 현재체결가 조회
 def get_current_price(params):
@@ -918,7 +995,7 @@ def cancel_all_unfilled_overseas_orders(*, ny_trading_date: str | None = None) -
         return summary
 
 
-def reset_mock_investment() -> dict:
+def reset_mock_investment(*, max_total_sec: int = 180) -> dict:
     """모의투자 리셋: 전체 보유 종목 전량 매도.
 
     리셋 후 스케줄러는 그대로 유지되며, 다음 장 오픈 시 정상 매수/매도 진행.
@@ -979,7 +1056,7 @@ def reset_mock_investment() -> dict:
 
     # 전량매도는 체결 지연/부분체결/레이트리밋으로 한 번에 끝나지 않을 수 있어,
     # "총 시간 제한 내에서" 반복 시도한다.
-    max_total_sec = 180  # 3분
+    max_total_sec = int(max(10, max_total_sec))  # 최소 10초
     deadline = time.time() + max_total_sec
     round_idx = 0
     last_remaining: list[dict] = []
@@ -1082,15 +1159,20 @@ def reset_mock_investment() -> dict:
 
             time.sleep(1)  # 현재가 조회 후 주문 전 1초 대기
 
+            # 모의투자 API는 가격 포맷에 민감한 케이스가 있어 2자리로 고정한다.
+            price_str = f"{float(current_price):.2f}"
+
             order_data = {
                 "CANO": settings.KIS_CANO,
                 "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
                 "OVRS_EXCG_CD": exchange_code,
                 "PDNO": ticker,
-                # 초기화/리셋은 "주문 접수 성공"이 아니라 "보유 0"이 목표라 시장가(01)로 실행
-                "ORD_DVSN": "01",
+                # 초기화/리셋은 "보유 0"이 목표.
+                # - 모의투자(VTS)는 "지정가만 가능한 상품" 오류가 자주 나서 지정가(00)로 강제한다.
+                # - 실전은 시장가(01)가 더 잘 체결되지만, 지정가(00)도 동작하므로 실패 시 재시도 루프가 커버한다.
+                "ORD_DVSN": "00" if bool(settings.KIS_USE_MOCK) else "01",
                 "ORD_QTY": str(qty),
-                "OVRS_ORD_UNPR": str(current_price),
+                "OVRS_ORD_UNPR": price_str,
                 "is_buy": False,
             }
 
@@ -1119,6 +1201,7 @@ def reset_mock_investment() -> dict:
                         "ticker": ticker,
                         "quantity": qty,
                         "price": current_price,
+                        "price_str": price_str,
                         "exchange_code": exchange_code,
                         "round": round_idx,
                     }
@@ -1127,10 +1210,36 @@ def reset_mock_investment() -> dict:
                 if last_fail_msg.get(ticker) != msg1:
                     logger.error("리셋: %s 매도 실패: %s", ticker, msg1)
                     last_fail_msg[ticker] = msg1
-                summary["failed"].append({"ticker": ticker, "quantity": qty, "error": msg1, "round": round_idx})
+                summary["failed"].append(
+                    {
+                        "ticker": ticker,
+                        "quantity": qty,
+                        "error": msg1,
+                        "round": round_idx,
+                        "exchange_code": exchange_code,
+                        "order_data": {
+                            "OVRS_EXCG_CD": exchange_code,
+                            "PDNO": ticker,
+                            "ORD_DVSN": order_data.get("ORD_DVSN"),
+                            "ORD_QTY": order_data.get("ORD_QTY"),
+                            "OVRS_ORD_UNPR": order_data.get("OVRS_ORD_UNPR"),
+                        },
+                        "order_result": order_result,
+                    }
+                )
                 summary["success"] = False
 
             time.sleep(1)
+
+        # 모의투자에서 특정 오류는 반복해도 해결되지 않는 경우가 많다(예: 잔고내역 없음).
+        # 이런 경우에는 오래 기다리지 말고 빠르게 종료해 DB-only 초기화로 넘어가게 한다.
+        if settings.KIS_USE_MOCK:
+            try:
+                last_errs = [str(x.get("error") or "") for x in (summary.get("failed") or [])[-5:]]
+                if any("모의투자 잔고내역이 없습니다" in e for e in last_errs):
+                    break
+            except Exception:
+                pass
 
         # 2) 체결/잔고 0 “정착(settle)” 대기(남은 시간이 허용하는 범위)
         settle_timeout_sec = min(45, max(5, int(deadline - time.time())))
@@ -1356,6 +1465,11 @@ def sync_holdings_to_db() -> bool:
         # 이때 초기화 시드(예: 5억→USD)나 직전 정상 값까지 0으로 덮어쓰면 프론트에서 "예수금 0"처럼 보인다.
         # 따라서 cash_usd가 유효(>0)할 때만 업데이트하고, 0이면 기존 값을 보존한다(best-effort).
         cash_to_write = cash_usd
+        if cash_to_write <= 0:
+            # output2에 현금 필드가 비는 케이스(특히 모의투자) 보완: psamount로 주문가능 외화 조회
+            ps_cash = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd="NASD")
+            if ps_cash and ps_cash > 0:
+                cash_to_write = ps_cash
         if cash_to_write <= 0:
             try:
                 prev = supabase.table("holdings_summary").select("cash_usd").eq("id", "main").limit(1).execute()

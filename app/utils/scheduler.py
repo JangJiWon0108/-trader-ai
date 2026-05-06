@@ -33,6 +33,7 @@ from app.services.balance_service import (
     sync_holdings_to_db,
     sync_order_fills_to_db,
     sync_open_orders_to_db,
+    sync_cash_usd_to_db,
 )
 from app.services.economic_service import update_economic_data_in_background
 from app.services.stock_recommendation_service import StockRecommendationService
@@ -568,6 +569,8 @@ class StockScheduler:
             sync_holdings_to_db()
             sync_order_fills_to_db()
             sync_open_orders_to_db()
+            # 마지막 단계: KIS 매수가능금액 기반 현금(USD)도 갱신
+            sync_cash_usd_to_db(ovrs_excg_cd="NASD")
         except Exception:
             logger.warning("매도 후 KIS→DB 재동기화 실패(무시)", exc_info=True)
         summary["status"] = "completed"

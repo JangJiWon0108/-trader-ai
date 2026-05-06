@@ -10,6 +10,7 @@ import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
 import { useTableSort } from '../../hooks/useTableSort'
 import { fetchAdminInferenceHistory, fetchAdminInferenceStatus, type AdminInferenceHistoryResponse, type AdminInferenceHistoryRow } from '../../api'
+import { formatKstDateTime } from '../../utils/time'
 
 const PAGE_SIZE = 30
 
@@ -170,7 +171,7 @@ export default function InferenceHistory() {
                   <tr>
                     <SortableTh colId="data_date" label="데이터 기준일" align="left" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} style={{ ...thDateHead, textAlign: 'left' }} />
                     <SortableTh colId="run_date_kst" label="적재일(KST)" align="left" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} style={{ ...thColHead, textAlign: 'left' }} />
-                    <SortableTh colId="created_at" label="적재시각(UTC)" align="left" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} style={{ ...thColHead, textAlign: 'left' }} />
+                    <SortableTh colId="created_at" label="적재시각(KST)" align="left" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} style={{ ...thColHead, textAlign: 'left' }} />
                     <SortableTh colId="stock" label="종목" align="left" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} style={{ ...thColHead, textAlign: 'left' }} />
                     <SortableTh colId="accuracy" label="정확도(%)" align="right" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} style={{ ...thColHead, textAlign: 'right' }} />
                     <SortableTh colId="rise_probability" label="상승확률(%)" align="right" sortKey={sortKey} sortDir={sortDir} onSort={requestSort} style={{ ...thColHead, textAlign: 'right' }} />
@@ -199,7 +200,7 @@ export default function InferenceHistory() {
                       <tr key={`${r.created_at ?? i}-${r.stock ?? ''}`} className="trader-list-row">
                         <td style={{ ...tdBase, ...tdSticky }}>{r.data_date ?? '—'}</td>
                         <td style={{ ...tdBase, color: theme.onSurfaceVariant }}>{r.run_date_kst ?? '—'}</td>
-                        <td style={{ ...tdBase, color: theme.onSurfaceVariant }}>{r.created_at ?? '—'}</td>
+                        <td style={{ ...tdBase, color: theme.onSurfaceVariant }}>{formatKstDateTime(r.created_at)}</td>
                         <td style={{ ...tdBase, fontWeight: 900 }}>{r.stock ?? '—'}</td>
                         <td style={{ ...tdBase, textAlign: 'right', fontWeight: 800 }}>{fmtNum(r.accuracy, 1)}</td>
                         <td style={{ ...tdBase, textAlign: 'right', fontWeight: 900, color: (r.rise_probability ?? 0) >= 0 ? theme.positive : theme.negative }}>

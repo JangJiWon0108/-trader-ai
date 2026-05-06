@@ -2,7 +2,7 @@ import { useState } from 'react'
 import AdminActionButton from './AdminActionButton'
 import { theme } from '../../../theme'
 import { useAlert } from '../../../contexts/AlertContext'
-import { initializeMockTrading } from '../../../api'
+import { initializeDbOnly, initializeMockTrading } from '../../../api'
 
 export default function TradingInitializeAction() {
   const alert = useAlert()
@@ -124,6 +124,28 @@ export default function TradingInitializeAction() {
     }
   }
 
+  const runDbOnly = async () => {
+    const go = await alert.run({
+      title: 'DB만 초기화',
+      message:
+        'DB만 초기화할까요?\n\n- KIS(한투) 계좌는 건드리지 않습니다.\n- Supabase 거래 상태 + 매매 로그를 초기화합니다.\n- 시작 자금(5억) 시드를 다시 넣습니다.\n\n※ 한투 사이트에서 모의투자 초기화를 이미 했거나, 지금 할 예정일 때 사용하세요.',
+      yesText: 'DB 초기화',
+      noText: '취소',
+    })
+    if (!go) return
+
+    setLoading(true)
+    try {
+      const res = await initializeDbOnly()
+      await alert.ok({ title: 'DB 초기화 완료', message: summaryText(res) })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e, null, 2)
+      await alert.error({ title: 'DB 초기화 실패', message: msg })
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       <div style={{ color: theme.onSurfaceVariant, fontSize: 12, lineHeight: 1.5 }}>
@@ -135,6 +157,14 @@ export default function TradingInitializeAction() {
         tone="danger"
         disabled={loading}
         onClick={runInitialize}
+        right={<span style={{ fontSize: 12, fontWeight: 900 }}>POST</span>}
+      />
+      <AdminActionButton
+        title="DB만 초기화(거래 상태+로그)"
+        subtitle="POST /balance/initialize-db-only"
+        tone="warning"
+        disabled={loading}
+        onClick={runDbOnly}
         right={<span style={{ fontSize: 12, fontWeight: 900 }}>POST</span>}
       />
     </div>

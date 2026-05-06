@@ -51,13 +51,102 @@ def read_balance():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"잔고 조회 중 오류 발생: {str(e)}")
 
-@router.get("/overseas", summary="해외주식 잔고 조회 (DB)")
+@router.get("/overseas", summary="해외주식 잔고 조회 (DB 스냅샷)")
 def read_balance_overseas(ovrs_excg_cd: str = Query(default="NASD")):
-    """Supabase holdings 테이블에서 잔고 반환 (거래소 파라미터 무시, 전체 반환)."""
+    """프론트는 항상 Supabase(DB) 스냅샷을 읽는다.
+
+    - KIS는 스케줄러/수동 sync로 DB에 반영된다.
+    - KIS 원본 확인은 /balance/overseas/kis-raw 사용.
+    """
     try:
-        return get_holdings_from_db()
+        r = get_holdings_from_db()
+        if isinstance(r, dict):
+            r["_source"] = "db"
+        return r
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"잔고 조회 중 오류 발생: {str(e)}")
+
+
+@router.get("/overseas/kis-raw", summary="해외주식 잔고 조회 (KIS 원본 그대로)")
+def read_balance_overseas_kis_raw():
+    """KIS 조회 결과를 그대로 반환(가공/DB 보강 없음)."""
+    try:
+        from app.services.balance_service import get_all_overseas_balances
+
+        r = get_all_overseas_balances()
+        if isinstance(r, dict):
+            r["_source"] = "kis_raw"
+        return r
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"KIS 원본 잔고 조회 실패: {str(e)}")
+
+
+@router.get("/overseas/db", summary="해외주식 잔고 조회 (DB 스냅샷)")
+def read_balance_overseas_db():
+    """Supabase holdings/holdings_summary 기반 스냅샷."""
+    try:
+        r = get_holdings_from_db()
+        if isinstance(r, dict):
+            r["_source"] = "db"
+        return r
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB 잔고 조회 실패: {str(e)}")
+
+
+@router.get("/cash-usd/kis", summary="KIS 기준 주문가능 외화(USD) 조회")
+def read_cash_usd_kis(
+    ovrs_excg_cd: str = Query(default="NASD", description="거래소 코드 (NASD/NYSE/AMEX)"),
+    item_cd: str = Query(default="AAPL", description="종목 코드 (예: AAPL)"),
+    ovrs_ord_unpr: str = Query(default="1", description="주문 단가(USD). 1 같은 작은 값 권장"),
+):
+    """
+    KIS '매수가능금액 조회'를 통해 주문가능 외화(USD)를 조회한다.
+
+    - 해외 잔고 조회(output2)가 현금 필드를 제공하지 않는 경우가 있어, 이 엔드포인트를 truth source로 사용한다.
+    """
+    try:
+        r = inquire_psamount(
+            {
+                "CANO": settings.KIS_CANO,
+                "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+                "OVRS_EXCG_CD": ovrs_excg_cd,
+                "ITEM_CD": item_cd,
+                "OVRS_ORD_UNPR": ovrs_ord_unpr,
+            }
+        )
+        out = r.get("output") if isinstance(r, dict) else None
+        if not isinstance(out, dict):
+            return {"rt_cd": "1", "msg_cd": "BAD_OUTPUT", "msg1": "output 형식이 올바르지 않습니다.", "raw": r}
+
+        def _f(k: str) -> float | None:
+            try:
+                v = out.get(k)
+                if v is None:
+                    return None
+                return float(str(v).strip() or "0")
+            except Exception:
+                return None
+
+        # KIS 문서/샘플마다 키가 달라 best-effort로 여러 키를 함께 반환한다.
+        candidates = {
+            "ord_psbl_frcr_amt": _f("ord_psbl_frcr_amt"),
+            "ovrs_ord_psbl_amt": _f("ovrs_ord_psbl_amt"),
+            "frcr_ord_psbl_amt1": _f("frcr_ord_psbl_amt1"),
+            "echm_af_ord_psbl_amt": _f("echm_af_ord_psbl_amt"),
+        }
+        best = max([v for v in candidates.values() if isinstance(v, (int, float))], default=0.0)
+        return {
+            "rt_cd": r.get("rt_cd"),
+            "msg_cd": r.get("msg_cd"),
+            "msg1": r.get("msg1"),
+            "currency": out.get("tr_crcy_cd"),
+            "cash_usd_best_effort": best,
+            "candidates": candidates,
+            "exrt": out.get("exrt"),
+            "raw_output": out,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"KIS 현금(매수가능) 조회 실패: {str(e)}")
 
 
 
@@ -442,7 +531,9 @@ def initialize_mock_trading():
             try:
                 # reset_mock_investment()는 {success, sold, failed, skipped ...}만 반환한다.
                 # initialize 응답에서 '실행 여부/장중 여부'를 안정적으로 표시하기 위해 메타 필드를 보강한다.
-                _r = reset_mock_investment()
+                # 모의투자에서는 KIS 제약으로 전량매도가 끝까지 안 되는 케이스가 잦아,
+                # 초기화 UX를 위해 최대 시도 시간을 더 짧게 잡는다.
+                _r = reset_mock_investment(max_total_sec=60 if settings.KIS_USE_MOCK else 180)
                 kis_reset = {
                     "attempted": True,
                     "market_hours": True,
@@ -460,11 +551,9 @@ def initialize_mock_trading():
             except Exception as e:
                 kis_reset = {"attempted": True, "market_hours": True, "success": False, "error": f"KIS reset 실패: {str(e)}"}
 
-            # 장중 초기화의 핵심 보장:
-            # - "DB를 지웠는데도 보유가 다시 나타남"의 근본 원인은 KIS 잔고가 실제로 0이 아니기 때문.
-            # - 따라서 장중에는 KIS 잔고가 0으로 정착(settled=True)된 경우에만 DB 초기화를 진행한다.
+            # 장중 초기화의 목표는 KIS 잔고까지 0으로 만드는 것.
+            # 따라서 장중에는 KIS 잔고가 0으로 정착(settled=True)된 경우에만 DB 초기화를 진행한다.
             if kis_reset.get("settled") is not True:
-                # 409: 현재 상태(conflict)에서 의도한 초기화 목표를 만족할 수 없음
                 raise HTTPException(
                     status_code=409,
                     detail={
@@ -486,9 +575,8 @@ def initialize_mock_trading():
                     "is_weekday": is_weekday,
                 }
             )
+            # 장외: KIS reset 스킵, DB 초기화만 수행
 
-        # KIS 잔고가 0으로 확정된 뒤에만 DB 거래 상태를 지운다(장중).
-        # 장외에는 KIS reset을 스킵하므로 DB만 초기화하는 모드로 동작한다.
         db_reset = reset_trading_state_in_db(
             initial_cash_krw=int(settings.MOCK_INITIAL_CASH_KRW),
             wipe_trade_logs=True,
@@ -512,7 +600,11 @@ def initialize_mock_trading():
         # - 장외: DB 초기화만 수행하므로 동기화는 시도하지 않는다(KIS 호출 실패 가능).
         post_sync = {"attempted": False, "holdings": None, "order_fills": None, "open_orders": None, "error": None}
         try:
-            if bool(kis_reset.get("attempted")) and bool(kis_reset.get("market_hours")):
+            if (
+                bool(kis_reset.get("attempted"))
+                and bool(kis_reset.get("market_hours"))
+                and (kis_reset.get("settled") is True)
+            ):
                 post_sync["attempted"] = True
                 from app.services.balance_service import (
                     sync_holdings_to_db,
@@ -564,6 +656,68 @@ def initialize_mock_trading():
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"초기화 중 오류 발생: {str(e)}")
+
+
+@router.post("/initialize-db-only", summary="DB만 초기화(거래 상태 + 시작 자금). KIS는 건드리지 않음")
+def initialize_db_only():
+    """
+    KIS(모의투자) 초기화를 한투 사이트에서 수행하는 경우를 위한 모드.
+    - KIS 전량매도/취소 등을 시도하지 않는다.
+    - Supabase 거래 상태 테이블(holdings/order_fills/open_orders 등) + 매매 로그를 초기화
+    - 시작 자금(기본 5억 원)을 holdings_summary에 시드
+    """
+    try:
+        scheduler_before = None
+        scheduler_stop = {"attempted": False, "stopped": None, "error": None}
+        scheduler_start = {"attempted": False, "started": None, "error": None}
+        try:
+            from app.utils.scheduler import get_scheduler_status, start_sell_scheduler, stop_sell_scheduler
+
+            scheduler_before = get_scheduler_status()
+            scheduler_stop["attempted"] = True
+            scheduler_stop["stopped"] = bool(stop_sell_scheduler())
+        except Exception as se:
+            scheduler_stop["attempted"] = True
+            scheduler_stop["stopped"] = False
+            scheduler_stop["error"] = str(se)
+
+        db_reset = reset_trading_state_in_db(
+            initial_cash_krw=int(settings.MOCK_INITIAL_CASH_KRW),
+            wipe_trade_logs=True,
+        )
+
+        # KIS를 건드리지 않으므로, 즉시 KIS→DB 동기화는 "진실(KIS)이 다시 채워지는" 효과가 있어 수행하지 않음.
+        result = {
+            "ok": bool(db_reset.get("ok")),
+            "mode": "db_only",
+            "db_ok": bool(db_reset.get("ok")),
+            "db_reset": db_reset,
+            "scheduler_before": scheduler_before,
+            "scheduler_stop": scheduler_stop,
+            "scheduler_start": scheduler_start,
+        }
+
+        # 초기화 후 매도 스케줄러 재시작(항상 start 시도)
+        try:
+            from app.utils.scheduler import start_sell_scheduler, stop_sell_scheduler
+
+            scheduler_start["attempted"] = True
+            started = start_sell_scheduler()
+            if not started:
+                try:
+                    stop_sell_scheduler()
+                except Exception:
+                    pass
+                started = start_sell_scheduler()
+            scheduler_start["started"] = bool(started)
+        except Exception as se2:
+            scheduler_start["attempted"] = True
+            scheduler_start["started"] = False
+            scheduler_start["error"] = str(se2)
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DB-only 초기화 중 오류 발생: {str(e)}")
 
 
 # 조건부 주문 요청 모델

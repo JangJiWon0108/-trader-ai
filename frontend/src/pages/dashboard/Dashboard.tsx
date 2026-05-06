@@ -17,6 +17,7 @@ import {
   type OrderFillRow,
   type CombinedRecommendation,
 } from '../../api'
+import { formatKstDateTime } from '../../utils/time'
 
 const cell: CSSProperties = {
   padding: '12px 14px',
@@ -371,7 +372,7 @@ export default function Dashboard() {
                   <strong style={{ color: theme.onSurface }}>다음 매수</strong>{' '}
                   {scheduler.data.buy_running
                     ? `(${scheduler.data.schedule_buy_time_kst ?? ''} KST 매일) ${formatCountdown(buyCd)}`
-                    : `예정 ${scheduler.data.next_auto_buy_at ? new Date(scheduler.data.next_auto_buy_at).toLocaleString('ko-KR') : '—'} · 정지 중`}
+                    : `예정 ${formatKstDateTime(scheduler.data.next_auto_buy_at)} · 정지 중`}
                 </div>
                 <div style={{ marginTop: 4 }}>
                   <strong style={{ color: theme.onSurface }}>다음 매도 점검</strong>{' '}

@@ -91,39 +91,9 @@ export const fetchOverseasBalance = (exchange = 'NASD') =>
 
 // All exchanges combined
 export async function fetchAllBalances(): Promise<KisOverseasBalance> {
-  const exchanges = ['NASD', 'NYSE', 'AMEX']
-  const results = await Promise.allSettled(exchanges.map(fetchOverseasBalance))
-  const allHoldings: KisHolding[] = []
-  let summary: KisOverseasBalance['output2'] = {}
-  let cashUsdBestEffort = 0
-  for (const r of results) {
-    if (r.status === 'fulfilled' && r.value.rt_cd === '0') {
-      allHoldings.push(...(r.value.output1 ?? []))
-      if (r.value.output2) summary = r.value.output2
-      // 백엔드가 DB 기반으로 잔고를 돌려주는 경우(output2 비어있음),
-      // cashUsdBestEffort(holdings_summary.cash_usd)를 top-level로 내려준다.
-      // KIS raw output2 기반 추정치와 함께 "가장 큰 값"을 사용한다.
-      if (typeof r.value.cashUsdBestEffort === 'number' && Number.isFinite(r.value.cashUsdBestEffort)) {
-        cashUsdBestEffort = Math.max(cashUsdBestEffort, r.value.cashUsdBestEffort)
-      }
-      const o2 = r.value.output2 as Record<string, string | undefined> | undefined
-      if (o2) {
-        for (const k of ['frcr_ord_psbl_amt1', 'ovrs_ord_psbl_amt', 'ord_psbl_frcr_amt'] as const) {
-          const v = parseFloat(o2[k] || '')
-          if (!isNaN(v) && v > cashUsdBestEffort) cashUsdBestEffort = v
-        }
-      }
-    }
-  }
-  // 거래소별 조회 결과를 합칠 때 동일 티커가 중복되는 경우가 있음 (예: NASD·NYSE 모두 PEP)
-  const byTicker = new Map<string, KisHolding>()
-  for (const h of allHoldings) {
-    const sym = (h.ovrs_pdno || '').trim()
-    if (!sym) continue
-    if (!byTicker.has(sym)) byTicker.set(sym, h)
-  }
-  const deduped = [...byTicker.values()]
-  return { rt_cd: '0', output1: deduped, output2: summary, cashUsdBestEffort }
+  // 백엔드 `/balance/overseas`가 DB 스냅샷(전체 보유+현금)을 반환하도록 통일되어,
+  // 거래소별 3회 호출/합산이 불필요하다.
+  return await fetchOverseasBalance('NASD')
 }
 
 // ── Stocks / AI predictions ────────────────────────────────────────
@@ -558,3 +528,6 @@ export async function fetchAllOrders(): Promise<NccsItem[]> {
 
 // ── Trading initialize (admin) ─────────────────────────────────────
 export const initializeMockTrading = () => post<unknown>('/balance/initialize')
+
+// ── Trading initialize (admin, DB only) ────────────────────────────
+export const initializeDbOnly = () => post<unknown>('/balance/initialize-db-only')
