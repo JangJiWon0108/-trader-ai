@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Any
 
 import pytz
 
-log = logging.getLogger(__name__)
+from app.utils.logger import get_logger
+
+log = get_logger(__name__)
 
 
 def _now_kst_iso() -> str:

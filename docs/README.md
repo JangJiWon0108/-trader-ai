@@ -1,357 +1,362 @@
-# Trader AI — 시스템 문서
+# 미국 주식 자동매매 시스템
 
-미국 주식 자동매매 시스템. 경제 지표 + 주가 데이터를 Transformer 모델로 예측하고, 기술적 지표 및 뉴스 감성 분석을 결합해 자동 매수/매도를 실행한다.
+딥러닝 모델로 주가를 예측하고, 차트 지표와 뉴스 감성을 규칙에 대입해 미국 주식을 자동으로 매매하는 퀀트 트레이딩 시스템
+
+> 현재는 LLM을 사용하지 않고, 아래 두 가지 방식을 사용함.
+> - **ML 모델 기반**: 과거 데이터를 학습한 Transformer 딥러닝 모델이 주가를 예측
+> - **규칙 기반**: RSI·MACD 같은 차트 지표와 뉴스 감성 점수를 사전에 정의된 조건에 대입해 매수·매도를 결정
 
 ---
 
 ## 목차
 
-1. [전체 아키텍처](#전체-아키텍처)
-2. [데이터 수집](#데이터-수집)
-3. [예측 모델](#예측-모델)
-4. [뉴스 감성 분석](#뉴스-감성-분석)
-5. [증권 API (한국투자증권 KIS)](#증권-api-한국투자증권-kis)
-6. [매수 조건 및 알고리즘](#매수-조건-및-알고리즘)
-7. [매도 조건 및 알고리즘](#매도-조건-및-알고리즘)
-8. [스케줄링](#스케줄링)
-9. [데이터베이스 스키마](#데이터베이스-스키마)
+1. [AI 예측 모델](#ai-예측-모델)
+2. [전체 흐름](#전체-흐름)
+3. [매매 대상 종목 (50개)](#매매-대상-종목-50개)
+4. [데이터 수집](#데이터-수집)
+5. [뉴스 감성 분석](#뉴스-감성-분석)
+6. [증권사 연결 (KIS)](#증권사-연결-kis)
+7. [매수 조건](#매수-조건)
+8. [매도 조건](#매도-조건)
+9. [스케줄링](#스케줄링)
 
 ---
 
-## 전체 아키텍처
+## AI 예측 모델
+
+### 목표
+
+타겟 50개 종목의 **5거래일 후 종가**를 예측하는 멀티아웃풋 회귀 모델이다.
+
+| 구분 | 내용 |
+|------|------|
+| 입력 A | 타겟 50개 종목의 최근 90일 종가 시퀀스 |
+| 입력 B | 거시·시장·환율·원자재 경제지표 시퀀스 (37개) |
+| 출력 | 50개 종목 각각의 5거래일 후 종가 (벡터 50개) |
+
+### 모델 구조 — 2-Branch Transformer
+
+- **전체 구조**: 2-브랜치 Transformer — 주가 브랜치 / 경제지표 브랜치를 독립적으로 인코딩한 뒤 합산
+- **브랜치 구성**: 각 브랜치는 `Transformer 인코더 스택 → Dense → 특징벡터` 순으로 연결
+- **Multi-Head Attention**: 시퀀스 내 각 시점 간의 상관관계를 학습 — 90일 중 어느 시점이 예측에 중요한지 스스로 파악
+- **Feed-Forward Network (FFN)**: Attention 출력을 비선형 변환으로 정제
+- **Fusion**: 두 브랜치의 특징벡터를 Add로 결합 → `Dense(128)`로 통합 표현 학습
+- **Dropout**: 과적합 방지를 위해 Fusion 이후 적용
+- **GlobalAveragePooling**: 시퀀스 전체를 고정 크기 벡터로 압축
+- **출력층**: `Dense(50)` — 50개 종목 각각의 5거래일 후 종가를 동시에 회귀 예측
 
 ```mermaid
-graph TD
-    subgraph Data["데이터 수집 (매일 KST 06:10)"]
-        FRED["FRED API<br/>경제 지표 15종"]
-        YF["Yahoo Finance<br/>주가·글로벌 지수"]
-        FRED --> DB_ECON["Supabase<br/>economic_and_stock_data"]
-        YF --> DB_ECON
-    end
+flowchart TD
+    IN_STOCK["주가 시퀀스<br/>최근 90일 × 50종목"]
+    IN_ECON["경제지표 시퀀스<br/>최근 90일 × 37개"]
 
-    subgraph Inference["추론 파이프라인 (경제 데이터 갱신 직후)"]
-        DB_ECON --> INF["run_inference.py<br/>Transformer 모델"]
-        INF --> DB_PRED["predicted_stocks"]
-        DB_PRED --> EVAL["평가·분석<br/>Accuracy / Rise Probability"]
-        EVAL --> DB_ANAL["stock_analysis_results"]
-    end
+    LEARN_STOCK["패턴 학습<br/>(주가 브랜치)"]
+    LEARN_ECON["패턴 학습<br/>(경제지표 브랜치)"]
 
-    subgraph Sentiment["뉴스 감성 분석"]
-        ALPHA["Alpha Vantage<br/>NEWS_SENTIMENT API"]
-        ALPHA --> DB_SENT["ticker_sentiment_analysis"]
-    end
+    ADD(["두 브랜치 결합"])
 
-    subgraph Technical["기술적 지표 계산"]
-        DB_ECON --> TECH["SMA20·SMA50·RSI·MACD 계산"]
-        TECH --> DB_TECH["stock_recommendations"]
-    end
+    OUT["5거래일 후 주가 예측<br/>50개 종목"]
 
-    subgraph Decision["매수/매도 의사결정"]
-        DB_ANAL --> FILTER["필터링<br/>Accuracy ≥ 80%<br/>Rise Prob ≥ 3%"]
-        DB_TECH --> MERGE["통합 점수 계산"]
-        DB_SENT --> MERGE
-        FILTER --> MERGE
-        MERGE --> BUY_CAND["매수 후보 목록<br/>(composite_score 정렬)"]
-    end
+    IN_STOCK --> LEARN_STOCK --> ADD
+    IN_ECON  --> LEARN_ECON  --> ADD
+    ADD --> OUT
 
-    subgraph Scheduler["자동매매 스케줄러"]
-        SCH_BUY["매수 스케줄러<br/>KST 00:00 daily"] --> BUY_CAND
-        BUY_CAND --> KIS_BUY["KIS API<br/>지정가 매수 주문"]
-
-        SCH_SELL["매도 스케줄러<br/>매 1분 (장중)"] --> HOLD["보유 종목 조회"]
-        HOLD --> SELL_LOGIC["매도 조건 판단<br/>익절·손절·기술·감성"]
-        SELL_LOGIC --> KIS_SELL["KIS API<br/>지정가 매도 주문"]
-    end
-
-    subgraph KIS["한국투자증권 KIS API"]
-        KIS_AUTH["OAuth2 토큰 관리<br/>(캐싱 + 자동 갱신)"]
-        KIS_BUY --> KIS_AUTH
-        KIS_SELL --> KIS_AUTH
-    end
-
-    subgraph DB["Supabase (PostgreSQL)"]
-        DB_ECON
-        DB_PRED
-        DB_ANAL
-        DB_SENT
-        DB_TECH
-        DB_TOKEN["access_tokens"]
-    end
+    classDef base fill:#E2E8F0,stroke:#64748B,color:#1e293b
+    class IN_STOCK,IN_ECON,LEARN_STOCK,LEARN_ECON,ADD,OUT base
 ```
+
+### 학습 설정
+
+- **학습 방식**: 슬라이딩 윈도우 — 90일치 데이터로 5거래일 후 주가를 맞히는 방식으로 반복 학습
+- **학습 샘플 수**: 7,295개 (전체 데이터에서 90+5거래일 제외)
+- **검증셋**: 최근 30거래일을 분리해 과적합 여부 확인
+- **학습 설정**: 최대 50 에포크, 배치 32, 학습률 0.0001 (성능 개선 없으면 조기 종료)
+- **모델 파일 크기**: 약 8.5 MB
+
+---
+
+## 전체 흐름
+
+```mermaid
+%%{init: {"flowchart": {"useMaxWidth": true, "htmlLabels": true, "nodeSpacing": 40, "rankSpacing": 60}} }%%
+flowchart TD
+    subgraph Data["📦 데이터 수집 (매일 22:00 KST)"]
+        FRED["FRED<br/>경제지표 15종<br/>금리 · 물가 · 실업률 · 환율 등"]
+        YF["Yahoo Finance<br/>주식 50종 + 시장데이터 21개<br/>(지수 · ETF · 글로벌 · 원자재)"]
+    end
+
+    subgraph AI["🤖 ML 모델 예측 (수집 직후)"]
+        INF["Transformer 추론<br/>주가 90일 (50종)<br/>+ 경제지표 (37개)<br/>→ 5거래일 후 주가"]
+        EVAL["예측 지표 계산<br/>Accuracy = 100 − MAPE<br/>RiseProb = (예측−현재) / 현재 × 100"]
+    end
+
+    subgraph Sentiment["📰 뉴스 감성 분석"]
+        ALPHA["Alpha Vantage API<br/>최근 3일 기사 100건<br/>감성 점수 평균 (−1 ~ +1)"]
+    end
+
+    subgraph Technical["📊 차트 신호 분석"]
+        TECH["① 골든크로스 — SMA20 &gt; SMA50<br/>② RSI &lt; 50 — 미과열<br/>③ MACD &gt; Signal — 상승 모멘텀"]
+    end
+
+    subgraph AutoBuy["🟢 자동 매수 (매일 00:00 KST)"]
+        FILTER["1차 필터 (AND)<br/>Accuracy ≥ 70%<br/>RiseProb ≥ 2%"]
+        RULE_BUY["2차 필터 — 뉴스 + 차트<br/>감성 ≥ 0.15 → 차트신호 2개 이상<br/>감성 &lt; 0.15 또는 없음 → 차트신호 3개"]
+        MERGE["매수 우선순위 점수<br/>RiseProb × 30%<br/>차트신호 × 40%<br/>뉴스감성 × 30%"]
+        BUY_CAND["점수 높은 순 정렬<br/>기보유 종목 스킵"]
+        BUY["매수 주문"]
+    end
+
+    subgraph AutoSell["🔴 자동 매도 (장중 1분마다)"]
+        HOLDINGS["KIS 잔고 조회<br/>보유 종목 · 매입가 · 현재가"]
+        SELL_PL["조건 A — 손익 기준 (OR)<br/>수익률 ≥ +5% → 익절<br/>수익률 ≤ −7% → 손절"]
+        SELL_RULE["조건 B — 차트 기반 매도<br/>감성 &lt; −0.15 → 매도신호 2개 이상<br/>감성 없음 → 매도신호 3개 이상<br/>감성 ≥ −0.15 → 매도신호 3개 이상<br/>────────────────<br/>① 데드크로스 — SMA20 &lt; SMA50<br/>② RSI &gt; 70 — 과매수<br/>③ MACD &lt; Signal — 모멘텀 약화"]
+        SELL_ORDER["매도 주문<br/>현재가 지정가로 전량 매도"]
+    end
+
+    FRED --> INF
+    YF --> INF
+    YF --> TECH
+    INF --> EVAL
+    EVAL --> FILTER
+    ALPHA --> RULE_BUY
+    TECH --> RULE_BUY
+    FILTER --> MERGE
+    RULE_BUY --> MERGE
+    MERGE --> BUY_CAND
+    BUY_CAND --> BUY
+    BUY --> HOLDINGS
+    TECH --> SELL_RULE
+    ALPHA --> SELL_RULE
+
+    HOLDINGS --> SELL_PL
+    HOLDINGS --> SELL_RULE
+
+    SELL_PL --> SELL_ORDER
+    SELL_RULE --> SELL_ORDER
+
+    classDef dataStyle fill:#BFDBFE,stroke:#2563EB,color:#1e3a5f
+    classDef aiStyle fill:#DDD6FE,stroke:#7C3AED,color:#2e1065
+    classDef sentStyle fill:#FDE68A,stroke:#D97706,color:#451a03
+    classDef techStyle fill:#A7F3D0,stroke:#059669,color:#064e3b
+    classDef buyStyle fill:#BBF7D0,stroke:#16A34A,color:#14532d
+    classDef sellStyle fill:#FECACA,stroke:#DC2626,color:#7f1d1d
+
+    class FRED,YF dataStyle
+    class INF,EVAL aiStyle
+    class ALPHA sentStyle
+    class TECH techStyle
+    class FILTER,RULE_BUY,MERGE,BUY_CAND,BUY buyStyle
+    class HOLDINGS,SELL_PL,SELL_RULE,SELL_ORDER sellStyle
+```
+
+### 용어 간단 정리
+
+| 용어 | 설명 |
+|------|------|
+| SMA (이동평균) | 최근 N일 종가의 평균을 이은 선<br/>→ 주가가 전반적으로 오르는 중인지 내리는 중인지 보는 선 |
+| 골든 크로스 | 단기 SMA가 장기 SMA를 위로 돌파<br/>→ 상승 전환 신호 |
+| 데드 크로스 | 단기 SMA가 장기 SMA를 아래로 이탈<br/>→ 하락 전환 신호 |
+| RSI | 최근 상승/하락 폭 비율로 과열·침체를 0~100으로 나타낸 지표<br/>→ 70 이상이면 너무 많이 올라 조정 가능, 30 이하면 너무 많이 내려 반등 가능 |
+| MACD / Signal | 단기-장기 EMA 차이(MACD)와 그 평균선(Signal)<br/>→ MACD가 Signal을 위로 넘으면 오르는 힘 강화, 아래로 내려가면 약화 |
+| MAPE | 예측값과 실제값의 평균 절대 백분율 오차 (Mean Absolute Percentage Error)<br/>수식: `mean(|실제 - 예측| / |실제|) × 100`<br/>→ 예측이 평균적으로 몇 % 빗나갔는지. 낮을수록 정확 |
+| Accuracy (%) | 100 − MAPE<br/>→ AI 예측 정확도. 높을수록 잘 맞춤 |
+| Rise Probability (%) | (예측가 − 현재가) / 현재가 × 100<br/>→ AI가 예측한 상승 여지(%). 양수면 오를 것으로 예측 |
+| 뉴스 감성 점수 | 기사별 감성 점수를 평균한 값 (−1 ~ +1)<br/>→ 양수면 긍정적 뉴스, 음수면 부정적 뉴스가 많다는 뜻 |
+| 익절 / 손절 | 목표 수익에 도달하면 팔아 이익 확정 / 일정 손실에 도달하면 팔아 추가 손실 방어<br/>→ 자동으로 수익을 챙기거나 손해를 막는 매도 |
+| 지정가 주문 | 내가 원하는 가격을 지정해 주문하는 방식<br/>→ 시스템은 현재가를 지정가로 써서 즉시 체결되도록 함 |
+| 장중 | 미국 거래소가 실제로 열려 거래 가능한 시간<br/>→ 한국 시간 기준 밤 10:30 ~ 새벽 5:00 (서머타임 적용 시) |
+
+---
+
+## 매매 대상 종목 (50개)
+
+나스닥 100 지수 편입 종목 중 시가총액 상위 50개를 선정했다. 유동성이 높고 시장 대표성이 있는 대형주 위주로 구성되어 있다.
+
+| 섹터 | 종목 |
+|------|------|
+| 반도체 | 엔비디아, 브로드컴, 마이크론, AMD, ASML, 인텔, 램리서치, 어플라이드 머티리얼즈, 텍사스 인스트루먼트, KLA Corp, Arm, 아나로그디바이스, 샌디스크, 퀄컴, 마벨 테크놀로지 |
+| 빅테크 | 애플, 마이크로소프트, 아마존, 구글, 메타, 테슬라 |
+| 소프트웨어·플랫폼 | 넷플릭스, 팔란티어, 쇼피파이, 앱러빈, 팔로알토 네트웍스, 인튜이트, 어도비, 케이던스, 시놉시스 |
+| 통신·네트워크 | 시스코, 티모바일, 컴캐스트 |
+| 소비재·유통 | 월마트, 코스트코, 스타벅스, 메르카도리브레, 몬델리즈 |
+| 헬스케어·바이오 | 암젠, 인튜이티브 서지컬, 버텍스 파마슈티컬스 |
+| 기타 | 린드, 펩시코, 씨게이트, 허니웰 인터내셔널, 부킹홀딩스, 콘스텔레이션 에너지, ADP, 에어비앤비, 메리어트 |
 
 ---
 
 ## 데이터 수집
 
-`stock.py` — `collect_economic_data()` 함수가 두 외부 소스에서 데이터를 수집해 `economic_and_stock_data` 테이블에 저장한다.
+매일 22시 00분(한국 시간), 두 곳에서 데이터를 가져온다.
 
-### FRED API (경제 지표 15종)
+### 미국 경제 지표 — FRED
 
-| FRED 코드 | 지표명 | 주기 |
-|-----------|--------|------|
-| T10YIE | 10년 기대 인플레이션율 | 일간 |
-| T10Y2Y | 장단기 금리차 (10년-2년) | 일간 |
-| FEDFUNDS | 기준금리 | 월간 |
-| UMCSENT | 미시간대 소비자 심리지수 | 월간 |
-| UNRATE | 실업률 | 월간 |
-| DGS2 | 2년 만기 미국 국채 수익률 | 일간 |
-| DGS10 | 10년 만기 미국 국채 수익률 | 일간 |
-| STLFSI4 | 금융 스트레스 지수 | 주간 |
-| PCE | 개인 소비 지출 | 월간 |
-| CPIAUCSL | 소비자 물가지수 | 월간 |
-| MORTGAGE5US | 5년 변동금리 모기지 | 주간 |
-| DTWEXM | 미국 달러 환율 | 월간 |
-| M2 | 통화 공급량 M2 | 주간 |
-| TDSP | 가계 부채 비율 | 분기 |
-| GDPC1 | GDP 성장률 | 분기 |
-| NASDAQCOM | 나스닥 종합지수 | 일간 |
+> **사이트**: https://fred.stlouisfed.org
 
-> 월간·분기 지표는 forward-fill로 일간 데이터로 변환된다.
+> 미국 연방준비제도(Fed)가 운영하는 공식 경제 데이터 플랫폼. 금리·물가·실업률 등 미국 거시경제 지표를 무료로 제공한다.
 
-### Yahoo Finance (주가 및 글로벌 지수)
+미국 거시경제 상황을 나타내는 지표 15종을 수집한다.
+> 글로벌 지수는 FRED가 아니라 Yahoo Finance에서 별도로 수집한다.
 
-| 분류 | 종목 |
+| 지표 | 의미 |
 |------|------|
-| 미국 지수 | S&P 500, 나스닥 100, VIX, 다우 존스 ETF, 러셀 2000 ETF |
-| 미국 ETF | SPY, QQQ, 미국 전체 채권시장, TIPS, 투자등급 회사채, 미국 리츠 |
-| 글로벌 지수 | 닛케이 225, 상해종합, 항셍, 영국 FTSE, 독일 DAX, 프랑스 CAC 40 |
-| 외환 | 달러/엔, 달러/위안, 달러 인덱스, 금 가격 |
-| 개별 주식 | 애플, 마이크로소프트, 아마존, 구글A/C, 메타, 테슬라, 엔비디아 외 18종 |
+| 기준금리 | 미국 중앙은행이 설정하는 이자율 |
+| 소비자 물가지수 (CPI) | 물가 상승률 |
+| 실업률 | 일자리를 못 찾는 사람 비율 |
+| GDP 성장률 | 경제가 얼마나 성장했는지 |
+| 장단기 금리차 | 단기·장기 국채 금리 차이 (경기 침체 예측 지표) |
+| 소비자 심리지수 | 사람들이 경기를 어떻게 느끼는지 |
+| 달러 환율 | 달러 강도 |
+| 금융 스트레스 지수 | 금융 시장의 불안 정도 |
+| 통화량 M2 | 시중에 풀린 돈의 양 |
+| 모기지 금리 | 주택 담보 대출 금리 |
+| 개인 소비 지출 (PCE) | 가계 소비 동향 |
+| 국채 수익률 (2년·10년) | 시장 금리 수준 |
+| 가계 부채 비율 | 가계의 채무 부담 |
 
----
+### 주가 및 시장 데이터 — Yahoo Finance
 
-## 예측 모델
+> **사이트**: https://finance.yahoo.com
 
-### 모델 구조
+> 전 세계 주식·지수·ETF·환율 데이터를 무료로 제공하는 금융 정보 플랫폼. 개별 종목의 일별 가격 히스토리를 가져오는 데 사용한다.
 
-Transformer 기반 멀티 인풋 주가 예측 모델.
+개별 주식과 시장 전반의 흐름을 파악하기 위한 데이터를 수집한다.
 
-```
-[주가 시계열 입력 (lookback=90일, 27종목)]
-        ↓
-  [Stock Encoder]
-        ↓
-           ╔══════════════════╗
-           ║  Transformer     ║  ← Multi-head Self-Attention
-           ║  (시계열 패턴)   ║
-           ╚══════════════════╝
-                   ↑
-[경제 지표 입력 (lookback=90일, 37개 피처)]
-        ↓
-  [Econ Encoder]
-        ↓
-
-  [Dense Layers]
-        ↓
-[출력: 27종목의 t+14일 예측 주가]
-```
-
-| 항목 | 값 |
-|------|----|
-| 모델 파일 | `predict_model/model/v1_260504/transformer_stock.keras` |
-| lookback | 90일 |
-| forecast_horizon | 14일 |
-| 주가 입력 차원 | 27 |
-| 경제 지표 입력 차원 | 37 |
-| 스케일러 | `stock_scaler.pkl` (주가), `econ_scaler.pkl` (경제 지표) |
-
-### 입력 데이터
-
-**주가 (27종목, target_columns)**
-
-애플, 마이크로소프트, 아마존, 구글 A, 구글 C, 메타, 테슬라, 엔비디아, 코스트코, 넷플릭스, 페이팔, 인텔, 시스코, 컴캐스트, 펩시코, 암젠, 허니웰 인터내셔널, 스타벅스, 몬델리즈, 마이크론, 브로드컴, 어도비, 텍사스 인스트루먼트, AMD, 어플라이드 머티리얼즈, S&P 500 ETF, QQQ ETF
-
-**경제 지표 (37개, economic_features)**
-
-FRED 15종 + Yahoo Finance 글로벌 지수·ETF·외환 22종
-
-### 예측값 및 평가 지표
-
-| 지표 | 설명 |
+| 분류 | 항목 |
 |------|------|
-| Accuracy (%) | `100 - MAPE` |
-| MAE / MSE / RMSE | 예측 오차 |
-| Rise Probability (%) | `(predicted - actual) / actual * 100` |
-| Recommendation | Rise Prob > 2% → `STRONG BUY`, > 0% → `BUY`, 그 외 → `SELL` |
+| 개별 주식 (50개) | 나스닥 100 시총 상위 50종목 (매매 대상과 동일) |
+| 미국 지수 (5개) | S&P 500, 나스닥 100, 다우존스, VIX (공포지수), 러셀 2000 |
+| 미국 ETF (6개) | SPY, QQQ, 채권 ETF, TIPS, 투자등급 회사채, 리츠 |
+| 글로벌 지수 (6개) | 일본 닛케이, 중국 상해, 홍콩 항셍, 영국 FTSE, 독일 DAX, 프랑스 CAC 40 |
+| 외환·원자재 (4개) | 달러/엔, 달러/위안, 달러 인덱스, 금 가격 |
 
-### 추론 흐름
-
-```
-Supabase economic_and_stock_data
-        ↓ (전체 로드, ffill·bfill 처리)
-run_prediction_pipeline()
-  - stock_scaler, econ_scaler로 정규화
-  - 슬라이딩 윈도우 (lookback=90) 배치 생성
-  - model.predict([x_stock, x_econ])
-  - inverse_transform → 실제 주가 단위
-        ↓
-predicted_stocks 테이블 저장
-        ↓
-evaluate_predictions() + analyze_rise_predictions()
-        ↓
-stock_analysis_results 테이블 저장
-```
+> 개별 주식(50개) **제외**: 총 21개 (미국 지수 5 + 미국 ETF 6 + 글로벌 지수 6 + 외환·원자재 4)  
+> 개별 주식(50개) **포함**: 총 71개
 
 ---
 
 ## 뉴스 감성 분석
 
-**API**: Alpha Vantage `NEWS_SENTIMENT`
+### 데이터 출처 — Alpha Vantage
 
-분석 대상: 추천 주식(Accuracy ≥ 80%, Rise Prob ≥ 3%) + 현재 보유 주식
+> **사이트**: https://www.alphavantage.co
 
-```python
-# 요청 파라미터
-params = {
-    "function": "NEWS_SENTIMENT",
-    "tickers": ticker,
-    "time_from": "최근 3일 전 00:00",
-    "limit": 100,
-    "apikey": api_key
-}
+금융 데이터 전문 플랫폼으로, 주식 가격뿐 아니라 뉴스 기사의 감성을 분석한 점수를 API로 제공한다. `NEWS_SENTIMENT` 엔드포인트를 사용하면 특정 종목(ticker)에 대한 최신 뉴스 기사와 함께 기사별 감성 점수를 바로 받을 수 있다.
+
+- 무료 플랜 존재 (분당 요청 수 제한 있음) → API 키를 여러 개 발급해 병렬 처리로 속도 보완
+- 수집 기준: 최근 3일 이내 기사, 최대 100건 (`limit=100`)
+- 종목과의 관련성(`relevance_score`)이 낮은 기사는 자동 제외
+
+### 감성 점수 계산
+
+각 기사에는 해당 종목에 대한 `ticker_sentiment_score`가 −1 ~ +1 범위로 붙어 있다. 이 점수들을 평균 내어 종목 하나당 대표 감성 점수를 산출한다.
+
+| 점수 범위 | 의미 | 매매 영향 |
+|-----------|------|-----------|
+| +0.15 이상 | 긍정적 뉴스 우세 | 매수 시 차트신호 기준 완화 가능 |
+| −0.15 ~ +0.15 | 중립 | 차트신호 기준 강화 |
+| −0.15 미만 | 부정적 뉴스 우세 | 보유 중이면 매도 후보 검토 |
+| 데이터 없음 | 뉴스 수집 실패 또는 기사 없음 | 감성 조건 제외, 차트신호만으로 판단 |
+
+---
+
+## 증권사 연결 (KIS)
+
+한국투자증권 API를 통해 실제 주문을 낸다.
+
+- **모의투자 / 실전투자** 전환 가능 (`.env` 파일에서 설정)
+- 로그인 토큰은 자동으로 발급·갱신된다 (약 24시간마다)
+- 지원 거래소: 나스닥, 뉴욕증권거래소(NYSE), 아멕스(AMEX)
+
+---
+
+## 매수 조건
+
+3단계를 모두 통과한 종목만 매수한다.
+
+### 1단계: AI 예측 통과
+
+```
+AI 정확도 ≥ 70%  AND  상승 확률 ≥ 2%
 ```
 
-| 항목 | 값 |
-|------|----|
-| relevance_score 필터 | ≥ 0.2 (관련성 낮은 기사 제외) |
-| 복수 API 키 | MAIN / SUB_1 / SUB_2 → 병렬 스레드 처리 |
-| 요청 간 지연 | 단일 키 5초, 복수 키 15초 |
-| 저장 테이블 | `ticker_sentiment_analysis` |
+AI가 자신 있게 오를 것이라고 예측한 종목만 통과.
 
-**감성 점수 계산**
+### 2단계: 차트 신호 확인
 
-```python
-average_sentiment = sum(ticker_sentiment_scores) / len(articles)
-# ticker_sentiment_score: -1.0 (매우 부정) ~ +1.0 (매우 긍정)
+차트 분석 지표 3가지 중 1개 이상 충족해야 한다.
+
+| 지표 | 매수 신호 | 의미 |
+|------|---------|------|
+| 골든 크로스 | 단기 평균 > 장기 평균 | 최근 주가 흐름이 살아나고 있음 |
+| RSI | RSI < 50 | 아직 과열되지 않은 상태 |
+| MACD | MACD > 시그널 라인 | 상승 모멘텀이 생기는 시점 |
+
+> **용어 설명**: 이동평균은 일정 기간의 평균 주가를 이은 선이다. 단기(20일)가 장기(50일)를 위로 돌파하면 "골든 크로스"라 부르며 상승 신호로 본다.
+
+### 3단계: 뉴스 + 차트 종합
+
+- 뉴스 감성이 좋은 경우(점수 ≥ 0.15): 차트 신호 2개 이상
+- 뉴스 감성이 중립/부정인 경우(점수 < 0.15) 또는 데이터 없음: 차트 신호 3개 이상
+
+> 코드 기준: 매수 판단에서 뉴스 감성은 “필수 게이트”가 아니다.  
+> - 감성 ≥ 0.15면 “긍정 감성”으로 분류되어(있는 경우) 차트 기준(≥2)을 적용하고, 종합 점수에 반영된다.  
+> - 감성 데이터가 없거나 감성 < 0.15면 “감성 미충족/없음”으로 취급되어 차트 기준을 더 강화(≥3)한다.
+
+통과한 종목은 아래 공식으로 점수를 계산해 높은 순으로 매수한다.
+
+```
+종합 점수 = (AI 상승 확률 × 30%) + (차트 신호 강도 × 40%) + (뉴스 점수 × 30%)
 ```
 
 ---
 
-## 증권 API (한국투자증권 KIS)
+## 매도 조건
 
-`app/services/balance_service.py`
+보유 중인 종목에 대해 1분마다 아래 조건을 확인한다. 하나라도 해당되면 전량 매도한다.
 
-### 인증 (OAuth2)
-
-```
-POST /oauth2/tokenP
-  grant_type=client_credentials
-  appkey / appsecret
-→ access_token (유효기간 ~24시간)
-```
-
-토큰은 메모리 캐시 + Supabase `access_tokens` 테이블에 저장되어 재사용된다. 만료 전에는 DB에서 읽고, 만료 후에는 자동 갱신 (최대 3회 재시도, EGW00133 오류 시 61초 대기).
-
-### 모의/실전 전환
-
-`.env`의 `KIS_USE_MOCK=true/false`로 전환. TR_ID가 자동으로 모의(`V`prefix) / 실전(`T`prefix)으로 분기된다.
-
-### 주요 API 엔드포인트
-
-| 기능 | 엔드포인트 | TR_ID (실전) |
-|------|-----------|-------------|
-| 해외주식 잔고 조회 | `/uapi/overseas-stock/v1/trading/inquire-balance` | TTTS3012R |
-| 해외주식 매수 (미국) | `/uapi/overseas-stock/v1/trading/order` | TTTT1002U |
-| 해외주식 매도 (미국) | `/uapi/overseas-stock/v1/trading/order` | TTTT1006U |
-| 현재체결가 조회 | `/uapi/overseas-price/v1/quotations/price` | HHDFS00000300 |
-| 주문·체결 조회 | `/uapi/overseas-stock/v1/trading/inquire-order` | TTTS3035R |
-| 예약주문 접수 | `/uapi/overseas-stock/v1/trading/order-resv` | TTTT3014U/3016U |
-
-지원 거래소: `NASD` (나스닥), `NYSE` (뉴욕), `AMEX` (아멕스)
-
----
-
-## 매수 조건 및 알고리즘
-
-### 1단계: ML 모델 필터링 (`stock_analysis_results`)
+### 조건 1: 수익/손실 기준
 
 ```
-Accuracy (%) ≥ 80
-AND Rise Probability (%) ≥ 3
++5% 이상 수익  →  익절 (이익 실현)
+-7% 이상 손실  →  손절 (손실 방어)
 ```
 
-### 2단계: 기술적 지표 필터링 (`stock_recommendations`)
-
-최근 6개월 일봉 데이터 기반. 아래 3가지 중 **1개 이상** 충족하는 종목만 통과:
-
-| 지표 | 매수 신호 조건 |
-|------|--------------|
-| 골든 크로스 | SMA20 > SMA50 |
-| RSI | RSI < 50 |
-| MACD | MACD 라인 > Signal 라인 |
-
-### 3단계: 통합 필터링 및 점수 계산
-
-| 조건 | 요구 사항 |
-|------|----------|
-| 감성 점수 ≥ 0.15인 경우 | 기술적 지표 2개 이상 충족 |
-| 감성 점수 < 0.15 또는 없는 경우 | 기술적 지표 3개 모두 충족 |
-
-**종합 점수 (composite_score)**
-
-```python
-composite_score = (
-    0.3 * rise_probability     # ML 예측 상승 확률
-  + 0.4 * tech_conditions_count  # 기술적 지표 (골든크로스 1.5, RSI·MACD 각 1.0)
-  + 0.3 * sentiment_score      # 뉴스 감성 점수
-)
-```
-
-결과는 composite_score 내림차순으로 정렬되어 매수 우선순위가 결정된다.
-
-### 4단계: 주문 실행
-
-- 이미 보유 중인 종목은 제외
-- 거래소 기본값: NASDAQ
-- 주문 유형: 지정가 (`ORD_DVSN=00`)
-- 매수 수량: 기본 1주 (현재 하드코딩, 추후 계좌 잔고 연동 예정)
-
----
-
-## 매도 조건 및 알고리즘
-
-`get_stocks_to_sell()` — 보유 종목 전체에 대해 아래 조건을 순서대로 평가한다.
-
-### 조건 1: 가격 기반 (익절/손절)
+### 조건 2: 나쁜 뉴스 + 차트 악화
 
 ```
-구매가 대비 현재가 변동률:
-  ≥ +5%  → 익절 매도
-  ≤ -7%  → 손절 매도
+뉴스 감성 점수 < -0.15  AND  차트 매도 신호 2개 이상
 ```
 
-### 조건 2: 감성 + 기술적 복합 신호
+### 조건 3: 차트 전반 악화
 
 ```
-뉴스 감성 점수 < -0.15
-AND 기술적 매도 신호 ≥ 2개
+차트 매도 신호 3개 모두 충족
 ```
 
-### 조건 3: 순수 기술적 신호
+### 매도 판단 규칙(우선순위/예외)
 
-```
-기술적 매도 신호 ≥ 3개 (모두 충족)
-```
+- **OR 조건**: 위 3개 조건 중 **하나라도** 충족하면 매도 후보로 분류된다. (조건이 여러 개 동시에 충족될 수 있으며, 이 경우 `sell_reasons`에 모두 기록)
+- **감성 데이터가 없으면**: 뉴스 감성 점수가 없을 때는 “조건 2”를 평가할 수 없으므로, **차트 매도 신호 3개 이상**이면 매도 후보가 될 수 있다. (기본값: `SELL_TECH_MIN_WITHOUT_SENTIMENT=3`)
+- **데이터 소스**
+  - **수익/손실(변동률)**: KIS 잔고의 `평균매입가(pchs_avg_pric)`와 `현재가(now_pric2)`로 계산
+  - **차트 신호**: Supabase `stock_recommendations`의 **종목별 최신 1행**(골든 크로스/RSI/MACD)
+  - **뉴스 감성**: Supabase `ticker_sentiment_analysis.average_sentiment_score`
+- **처리 순서**: 매도 후보는 **변동률 절대값이 큰 종목부터** 처리한다.
+- **주문 방식**: 자동 매도는 기본적으로 **전량 지정가 주문(현재가로 지정)**을 사용한다. (주문 성공/실패 및 사유는 로그/일일 주문 히스토리에 남는다)
 
-**기술적 매도 신호 3가지**
+**차트 매도 신호 3가지**
 
-| 신호 | 조건 |
-|------|------|
-| 데드 크로스 | SMA20 < SMA50 (골든 크로스 없음) |
-| RSI 과매수 | RSI > 70 |
-| MACD 매도 | MACD 라인 < Signal 라인 |
-
-### 매도 주문 실행
-
-- 매도 조건 충족 종목: 절대 가격 변동률 기준 내림차순 정렬
-- 현재체결가 조회 후 지정가 전량 매도
-- API 속도 제한 방지: 요청 간 2초 대기
+| 신호 | 조건 | 의미 |
+|------|------|------|
+| 데드 크로스 | 단기 평균 < 장기 평균 | 주가 흐름이 하락 전환 |
+| RSI 과매수 | RSI > 70 | 주가가 너무 많이 올라 조정 가능성 |
+| MACD 매도 | MACD < 시그널 라인 | 상승 모멘텀 소진 |
 
 ---
 
 ## 스케줄링
 
-`app/utils/scheduler.py` — Python `schedule` 라이브러리 + 데몬 스레드
+시스템이 자동으로 실행되는 시간표 (한국 시간 기준).
 
 ```mermaid
 gantt
@@ -359,9 +364,9 @@ gantt
     dateFormat HH:mm
     axisFormat %H:%M
 
-    section 경제 데이터
-    경제·주가 데이터 수집     :06:10, 30m
-    Transformer 추론 (자동)   :06:40, 10m
+    section 데이터·예측
+    경제·주가 데이터 수집     :22:00, 30m
+    AI 예측 자동 실행         :22:30, 10m
 
     section 매수
     자동 매수 실행            :00:00, 5m
@@ -370,40 +375,10 @@ gantt
     매도 조건 체크 (1분 주기) :22:30, 390m
 ```
 
-| 스케줄러 | 실행 시간 | 설정 키 |
-|---------|----------|---------|
-| 경제 데이터 수집 | KST 06:10 (매일) | `SCHEDULE_ECONOMIC_UPDATE_TIME` |
-| 자동 매수 | KST 00:00 (매일) | `SCHEDULE_AUTO_BUY_TIME` |
-| 자동 매도 체크 | 매 1분 (미국 장중만) | `SCHEDULE_AUTO_SELL_INTERVAL_MIN` |
+| 작업 | 실행 시간 |
+|------|---------|
+| 경제 데이터 수집 + AI 예측 | 매일 22:00 |
+| 자동 매수 | 매일 자정 (00:00) |
+| 자동 매도 체크 | 미국 장중 (한국 시간 22:30~05:00) 매 1분 |
 
-**미국 장 시간 판단 (서머타임 자동 적용)**
-
-```python
-# pytz America/New_York 기준
-# 평일 (월~금) 09:30 ~ 16:00 ET
-is_market_hours = is_weekday and is_market_open_time
-```
-
-**경제 데이터 갱신 후 추론 자동 실행**
-
-```
-SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE=true (기본값)
-→ 경제 데이터 갱신 시 신규 행이 1개 이상이면
-  run_inference_and_save_to_db() 자동 호출
-```
-
----
-
-## 데이터베이스 스키마
-
-Supabase (PostgreSQL) 사용.
-
-| 테이블 | 용도 |
-|--------|------|
-| `economic_and_stock_data` | 경제 지표 + 주가 일간 데이터 (2006~) |
-| `predicted_stocks` | Transformer 모델 예측 결과 (날짜별 종목별 예측가·실제가) |
-| `stock_analysis_results` | 예측 평가 + 상승 확률 + 추천 등급 |
-| `stock_recommendations` | 기술적 지표 분석 결과 (SMA, RSI, MACD, 골든크로스) |
-| `ticker_sentiment_analysis` | Alpha Vantage 뉴스 감성 점수 (ticker별 평균) |
-| `access_tokens` | KIS OAuth2 토큰 캐시 |
-
+> 미국 주식 장은 한국 시간으로 밤 10시 30분~새벽 5시에 열린다 (서머타임 적용 시).

@@ -66,7 +66,7 @@ class Settings(BaseSettings):
 
     SCHEDULE_AUTO_BUY_TIME: str = Field(default="00:00", description="자동 매수 실행 시간 (HH:MM, KST)")
     SCHEDULE_AUTO_SELL_INTERVAL_MIN: int = Field(default=1, description="자동 매도 체크 주기 (분)")
-    SCHEDULE_ECONOMIC_UPDATE_TIME: str = Field(default="06:10", description="경제 데이터 수집 시간 (HH:MM, KST)")
+    SCHEDULE_ECONOMIC_UPDATE_TIME: str = Field(default="22:00", description="경제 데이터 수집 시간 (HH:MM, KST)")
     SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE: bool = Field(
         default=True,
         description="매일 경제·주가 DB 갱신(스케줄) 직후, 신규 저장 행이 있으면 저장 모델로 추론·predicted_stocks 등 갱신",
@@ -91,8 +91,8 @@ class Settings(BaseSettings):
     TECH_MACD_SIGNAL: int = Field(default=9, description="MACD 시그널 EMA 기간")
 
     # ── 매수 조건 임계값 ──────────────────────────────────────────────────────
-    BUY_MODEL_ACCURACY_MIN: float = Field(default=80.0, description="매수 허용 최소 모델 정확도 (%)")
-    BUY_RISE_PROB_MIN: float = Field(default=3.0, description="매수 허용 최소 상승 확률 (%)")
+    BUY_MODEL_ACCURACY_MIN: float = Field(default=70.0, description="매수 허용 최소 모델 정확도 (%)")
+    BUY_RISE_PROB_MIN: float = Field(default=2.0, description="매수 허용 최소 상승 확률 (%)")
     BUY_RSI_MAX: float = Field(default=50.0, description="매수 허용 RSI 상한 (이 값 미만일 때 매수 신호)")
     BUY_SENTIMENT_MIN: float = Field(default=0.15, description="매수 허용 최소 감성 점수")
     BUY_TECH_MIN_WITH_SENTIMENT: int = Field(default=2, description="감성 조건 충족 시 필요한 최소 기술지표 매수 신호 수")
@@ -110,7 +110,8 @@ class Settings(BaseSettings):
     SELL_RSI_OVERBOUGHT: float = Field(default=70.0, description="과매수 판단 RSI 기준 (이 값 초과 시 매도 신호)")
     SELL_SENTIMENT_MAX: float = Field(default=-0.15, description="부정 감성 판단 기준 (이 값 미만 시 매도 신호)")
     SELL_TECH_MIN_WITH_SENTIMENT: int = Field(default=2, description="부정 감성 충족 시 필요한 최소 기술지표 매도 신호 수")
-    SELL_TECH_MIN_WITHOUT_SENTIMENT: int = Field(default=3, description="감성 데이터 없을 때 필요한 최소 기술지표 매도 신호 수")
+    SELL_TECH_MIN_TECH_ONLY: int = Field(default=3, description="감성과 무관하게(또는 감성이 중립/긍정일 때) 적용하는 기술지표 기반 매도 최소 신호 수")
+    SELL_TECH_MIN_WITHOUT_SENTIMENT: int = Field(default=3, description="감성 데이터가 없을 때 적용하는 기술지표 기반 매도 최소 신호 수")
 
     # ── 뉴스 감성 분석 파라미터 ───────────────────────────────────────────────
     SENTIMENT_RELEVANCE_THRESHOLD: float = Field(default=0.2, description="뉴스 기사 관련성 최소 점수 (이 값 미만 기사 제외)")
@@ -129,6 +130,29 @@ class Settings(BaseSettings):
         description="Generative Language API generateContent 모델 ID",
     )
     GEMINI_API_KEY: str = Field(default="", description="Google AI / Gemini API 키 (쿼리 파라미터 key)")
+
+    # ── LLM 기반 주식 분석(stock_analysis_results) ──────────────────────────
+    STOCK_ANALYSIS_USE_LLM: bool = Field(
+        default=False,
+        description="True면 추론 파이프라인에서 Recommendation/Analysis를 LLM으로 생성(실패 시 규칙 fallback)",
+    )
+    STOCK_ANALYSIS_GEMINI_MODEL_ID: str = Field(
+        default="gemini-3.1-pro-preview",
+        description="주식 추천/분석(Recommendation/Analysis) 생성에 사용할 Gemini 모델 ID",
+    )
+    STOCK_ANALYSIS_LLM_TIMEOUT_SEC: float = Field(
+        default=60.0,
+        description="LLM 호출 타임아웃(초) — stock_analysis_results 생성용",
+    )
+    STOCK_ANALYSIS_LLM_MAX_STOCKS: int = Field(
+        default=60,
+        description="LLM으로 한 번에 분석할 최대 종목 수(과다 토큰 방지). 50 종목이면 60이면 충분.",
+    )
+
+    EOD_LLM_GEMINI_MODEL_ID: str = Field(
+        default="gemini-2.5-flash",
+        description="일일 마감 요약 리포트 생성에 사용할 Gemini 모델 ID",
+    )
 
     SCHEDULE_EOD_LLM_REPORT_ENABLED: bool = Field(
         default=True,

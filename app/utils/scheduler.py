@@ -6,7 +6,6 @@
 
 # ─── 모듈 임포트 ───
 import asyncio
-import logging
 import threading
 import time  # noqa: F401  (일부 잡에서 사용)
 import traceback
@@ -15,6 +14,7 @@ from datetime import datetime, timedelta
 import pytz
 import schedule
 
+from app.utils.logger import get_logger
 from alarm.notify import (
     notify_telegram_auto_sell_run,
     notify_telegram_economic_update,
@@ -27,17 +27,9 @@ from app.services.balance_service import get_all_overseas_balances, get_current_
 from app.services.economic_service import update_economic_data_in_background
 from app.services.stock_recommendation_service import StockRecommendationService
 
-# ─── 설정 로드 (로깅) ───
+# ─── 로깅 ───
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('stock_scheduler.log')
-    ]
-)
-logger = logging.getLogger('stock_scheduler')
+logger = get_logger("stock_scheduler")
 
 # schedule 모듈의 전역 job 큐는 스레드 안전하지 않다. 주식 스케줄러 스레드와 경제 스케줄러 스레드가
 # 동시에 run_pending()을 호출하면 동일 잡(예: 매도)이 같은 시각에 두 번 실행될 수 있다.
@@ -76,6 +68,47 @@ class StockScheduler:
         self.scheduler_thread = None
         self._sell_job = None
         self._sell_lock = threading.Lock()  # 동시 실행 방지
+        self._last_not_market_hours_log_at: datetime | None = None
+
+    @staticmethod
+    def _calc_market_window(now_in_ny: datetime) -> tuple[bool, datetime, datetime]:
+        """
+        미국 정규장(ET) 기준 장중 여부 및 오늘(또는 다음 거래일) 장 시작/종료 시각을 반환.
+
+        반환:
+        - is_market_hours: 장중 여부 (09:30~16:00 ET, 월~금)
+        - open_dt: (해당 거래일) 09:30 ET
+        - close_dt: (해당 거래일) 16:00 ET
+        """
+        ny = pytz.timezone("America/New_York")
+        n = now_in_ny.astimezone(ny)
+
+        # "오늘" 기준 오픈/클로즈 시각
+        open_dt = n.replace(hour=9, minute=30, second=0, microsecond=0)
+        close_dt = n.replace(hour=16, minute=0, second=0, microsecond=0)
+
+        wd = n.weekday()  # 0=월 ... 6=일
+        is_weekday = 0 <= wd <= 4
+        is_market_hours = bool(is_weekday and (open_dt <= n <= close_dt))
+        return is_market_hours, open_dt, close_dt
+
+    @staticmethod
+    def _next_market_open(now_in_ny: datetime) -> datetime:
+        """다음 미국 정규장 시작(09:30 ET)을 반환."""
+        ny = pytz.timezone("America/New_York")
+        n = now_in_ny.astimezone(ny)
+        is_market_hours, open_dt, close_dt = StockScheduler._calc_market_window(n)
+
+        # 장 시작 전이면 오늘 09:30
+        if n < open_dt and 0 <= n.weekday() <= 4:
+            return open_dt
+        # 장중/장마감 후면 다음 거래일 09:30
+        days = 1
+        while True:
+            cand = (open_dt + timedelta(days=days)).replace(hour=9, minute=30, second=0, microsecond=0)
+            if 0 <= cand.weekday() <= 4:
+                return cand
+            days += 1
     
     def start(self):
         """매수 스케줄러 시작"""
@@ -175,6 +208,18 @@ class StockScheduler:
             logger.info("자동 매수 작업 시작")
             summary = self._execute_auto_buy()
             logger.info("자동 매수 작업 완료")
+            # 잔고 스냅샷 추가 (텔레그램 메시지 풍부화)
+            try:
+                summary["balance_snapshot"] = get_all_overseas_balances()
+            except Exception as be:
+                logger.warning("매수 후 잔고 조회 실패: %s", be)
+                summary["balance_snapshot"] = None
+            try:
+                from alarm.notify import notify_telegram_auto_buy_run
+                summary["telegram_sent"] = notify_telegram_auto_buy_run(summary)
+            except Exception as te:
+                summary["telegram_sent"] = False
+                logger.warning("매수 텔레그램 전송 실패: %s", te)
             try:
                 from app.services.daily_log_service import save_daily_buy_log
                 save_daily_buy_log(summary)
@@ -190,57 +235,30 @@ class StockScheduler:
         """자동 매도 실행 함수 - 1분마다 실행됨"""
         if not self._sell_lock.acquire(blocking=False):
             logger.warning("매도 작업이 이미 실행 중입니다. 건너뜁니다.")
-            kst = datetime.now(pytz.timezone("Asia/Seoul"))
-            ny = datetime.now(pytz.timezone("America/New_York"))
-            lock_summary = {
-                "job": "auto_sell",
-                "status": "skipped_lock",
-                "success": True,
-                "message": "이전 매도 실행이 아직 끝나지 않아 이번 분은 건너뜀",
-                "kst": kst.strftime("%Y-%m-%d %H:%M:%S %Z"),
-                "ny_et": ny.strftime("%Y-%m-%d %H:%M:%S %Z"),
-                "ny_trading_date": ny.strftime("%Y-%m-%d"),
-                "market_hours": None,
-                "candidate_count": 0,
-                "items": [],
-            }
-            notify_telegram_auto_sell_run(lock_summary)
-            _persist_auto_sell_summary(lock_summary)
             return False
         try:
             logger.info("자동 매도 작업 시작")
             summary = self._execute_auto_sell()
             logger.info("자동 매도 작업 완료")
-            # 미국 정규장(뉴욕 평일 9:30~16:00 ET)일 때만 텔레그램 — 장외는 DB만 저장
             if summary.get("market_hours") is True:
+                # 잔고 스냅샷 추가 (텔레그램 메시지 풍부화)
+                try:
+                    summary["balance_snapshot"] = get_all_overseas_balances()
+                except Exception as be:
+                    logger.warning("잔고 조회 실패(텔레그램용): %s", be)
+                    summary["balance_snapshot"] = None
+                # 장중: 후보 유무 무관하게 텔레그램 전송 + DB 저장
                 try:
                     summary["telegram_sent"] = notify_telegram_auto_sell_run(summary)
                 except Exception as te:
                     summary["telegram_sent"] = False
-                    logger.error(
-                        "자동 매도 텔레그램 전송 중 예외: %s", te, exc_info=True
-                    )
-            _persist_auto_sell_summary(summary)
+                    logger.error("자동 매도 텔레그램 전송 중 예외: %s", te, exc_info=True)
+                _persist_auto_sell_summary(summary)
+            # 장외: Telegram/DB 모두 스킵
             return True
         except Exception as e:
             logger.error(f"자동 매도 작업 중 오류 발생: {str(e)}", exc_info=True)
             notify_telegram_trading_job_exception("자동 매도", e)
-            ny = datetime.now(pytz.timezone("America/New_York"))
-            kst = datetime.now(pytz.timezone("Asia/Seoul"))
-            _persist_auto_sell_summary(
-                {
-                    "job": "auto_sell",
-                    "status": "worker_exception",
-                    "success": False,
-                    "error": str(e),
-                    "kst": kst.strftime("%Y-%m-%d %H:%M:%S %Z"),
-                    "ny_et": ny.strftime("%Y-%m-%d %H:%M:%S %Z"),
-                    "ny_trading_date": ny.strftime("%Y-%m-%d"),
-                    "market_hours": None,
-                    "candidate_count": 0,
-                    "items": [],
-                }
-            )
             return False
         finally:
             self._sell_lock.release()
@@ -249,17 +267,10 @@ class StockScheduler:
         """자동 매도 실행 로직. 매 실행 요약 dict 반환 (텔레그램용)."""
         now_in_korea = datetime.now(pytz.timezone("Asia/Seoul"))
         now_in_ny = datetime.now(pytz.timezone("America/New_York"))
-        ny_hour = now_in_ny.hour
-        ny_minute = now_in_ny.minute
-        ny_weekday = now_in_ny.weekday()  # 0=월요일, 6=일요일
-
-        is_weekday = 0 <= ny_weekday <= 4
-        is_market_open_time = (
-            (ny_hour == 9 and ny_minute >= 30)
-            or (10 <= ny_hour < 16)
-            or (ny_hour == 16 and ny_minute == 0)
-        )
-        is_market_hours = is_weekday and is_market_open_time
+        is_market_hours, open_dt_ny, close_dt_ny = self._calc_market_window(now_in_ny)
+        next_open_ny = self._next_market_open(now_in_ny)
+        next_open_kst = next_open_ny.astimezone(pytz.timezone("Asia/Seoul"))
+        mins_to_open = int(max(0, (next_open_ny - now_in_ny).total_seconds()) // 60)
 
         summary: dict = {
             "job": "auto_sell",
@@ -267,13 +278,36 @@ class StockScheduler:
             "kst": now_in_korea.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "ny_et": now_in_ny.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "market_hours": is_market_hours,
+            "market_open_ny": open_dt_ny.isoformat(),
+            "market_close_ny": close_dt_ny.isoformat(),
+            "next_market_open_ny": next_open_ny.isoformat(),
+            "next_market_open_kst": next_open_kst.isoformat(),
+            "minutes_to_next_open": mins_to_open,
             "items": [],
         }
 
         if not is_market_hours:
-            logger.info(
-                f"현재 시간 {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다."
-            )
+            # 장외에는 로그 스팸을 줄이되, 장 오픈 임박(5분 이내)이면 더 자주 남긴다.
+            should_log = False
+            if self._last_not_market_hours_log_at is None:
+                should_log = True
+            else:
+                elapsed = (now_in_korea - self._last_not_market_hours_log_at).total_seconds()
+                if mins_to_open <= 5:
+                    should_log = elapsed >= 60  # 오픈 임박: 1분당 1회
+                else:
+                    should_log = elapsed >= 600  # 평상시: 10분당 1회
+
+            if should_log:
+                self._last_not_market_hours_log_at = now_in_korea
+                logger.info(
+                    "현재 시간 %s (뉴욕: %s)은 미국 장 시간이 아닙니다. 매도 작업을 건너뜁니다. 다음 장 시작: %s (KST %s, 약 %d분 후)",
+                    now_in_korea.strftime("%Y-%m-%d %H:%M:%S"),
+                    now_in_ny.strftime("%Y-%m-%d %H:%M:%S"),
+                    next_open_ny.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                    next_open_kst.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                    mins_to_open,
+                )
             summary["status"] = "skipped_not_market_hours"
             summary["success"] = True
             summary["candidate_count"] = 0
@@ -306,6 +340,12 @@ class StockScheduler:
                 sell_reasons = candidate.get("sell_reasons", [])
                 reasons_str = "; ".join(sell_reasons)
                 logger.info(f"{stock_name}({ticker}) 매도 근거: {reasons_str}")
+                _cmeta = {
+                    "purchase_price": candidate.get("purchase_price"),
+                    "price_change_pct": candidate.get("price_change_percent"),
+                    "tech_details": candidate.get("technical_sell_details"),
+                    "sentiment_score": candidate.get("sentiment_score"),
+                }
 
                 api_exchange_code = exchange_code
                 if exchange_code == "NASD":
@@ -334,6 +374,7 @@ class StockScheduler:
                             "outcome": "price_fetch_failed",
                             "error": msg1,
                             "sell_reasons": sell_reasons,
+                            **_cmeta,
                         }
                     )
                     if "초당" in str(msg1):
@@ -352,6 +393,7 @@ class StockScheduler:
                                 "stock_name": stock_name,
                                 "outcome": "price_empty",
                                 "sell_reasons": sell_reasons,
+                                **_cmeta,
                             }
                         )
                         time.sleep(2)
@@ -368,6 +410,7 @@ class StockScheduler:
                                 "outcome": "invalid_price",
                                 "current_price": current_price,
                                 "sell_reasons": sell_reasons,
+                                **_cmeta,
                             }
                         )
                         continue
@@ -381,6 +424,7 @@ class StockScheduler:
                             "error": str(ve),
                             "raw_last": str(last_price),
                             "sell_reasons": sell_reasons,
+                            **_cmeta,
                         }
                     )
                     continue
@@ -397,9 +441,32 @@ class StockScheduler:
                 }
 
                 logger.info(f"{stock_name}({ticker}) 매도 주문 실행: 수량 {quantity}주, 가격 ${current_price}")
-                order_result = order_overseas_stock(order_data)
-                msg1 = order_result.get("msg1", "")
-                order_success = order_result.get("rt_cd") == "0"
+                # KIS 주문 API는 초당 호출 제한이 있어, 해당 오류는 짧게 대기 후 재시도한다.
+                max_attempts = 3
+                backoff_sec = 1.0
+                order_result = None
+                msg1 = ""
+                order_success = False
+                for attempt in range(1, max_attempts + 1):
+                    order_result = order_overseas_stock(order_data)
+                    msg1 = order_result.get("msg1", "") if isinstance(order_result, dict) else ""
+                    order_success = bool(isinstance(order_result, dict) and order_result.get("rt_cd") == "0")
+                    if order_success:
+                        break
+                    if "초당" in str(msg1) or "거래건수" in str(msg1) or "too many" in str(msg1).lower():
+                        logger.warning(
+                            "%s(%s) 매도 레이트리밋 감지 → %ss 후 재시도 (%s/%s): %s",
+                            stock_name,
+                            ticker,
+                            backoff_sec,
+                            attempt,
+                            max_attempts,
+                            msg1,
+                        )
+                        time.sleep(backoff_sec)
+                        backoff_sec *= 2
+                        continue
+                    break
 
                 try:
                     from app.services.daily_log_service import save_order
@@ -432,6 +499,7 @@ class StockScheduler:
                             "exchange_code": exchange_code,
                             "api_message": msg1,
                             "sell_reasons": sell_reasons,
+                            **_cmeta,
                         }
                     )
                 else:
@@ -446,6 +514,7 @@ class StockScheduler:
                             "exchange_code": exchange_code,
                             "error": msg1 or "알 수 없는 오류",
                             "sell_reasons": sell_reasons,
+                            **_cmeta,
                         }
                     )
 
@@ -510,6 +579,11 @@ class StockScheduler:
             summary["success"] = False
             return summary
 
+        try:
+            self.recommendation_service.generate_technical_recommendations()
+        except Exception as te:
+            logger.warning("매수 전 기술적 지표 갱신 실패(기존 DB 값으로 진행): %s", te)
+
         recommendations = self.recommendation_service.get_combined_recommendations_with_technical_and_sentiment()
 
         if not recommendations or not recommendations.get("results"):
@@ -527,6 +601,15 @@ class StockScheduler:
             try:
                 ticker = candidate["ticker"]
                 stock_name = candidate["stock_name"]
+                _bmeta = {
+                    "accuracy": candidate.get("accuracy"),
+                    "rise_probability": candidate.get("rise_probability"),
+                    "sentiment_score": candidate.get("sentiment_score"),
+                    "rsi": candidate.get("rsi"),
+                    "golden_cross": candidate.get("golden_cross"),
+                    "macd_buy_signal": candidate.get("macd_buy_signal"),
+                    "composite_score": candidate.get("composite_score"),
+                }
 
                 if ticker.endswith(".X") or ticker.endswith(".N"):
                     exchange_code = "NYSE" if ticker.endswith(".N") else "NASD"
@@ -568,9 +651,34 @@ class StockScheduler:
                 }
 
                 logger.info(f"{stock_name}({ticker}) 매수 주문 실행: 수량 {quantity}주, 가격 ${current_price}")
-                order_result = order_overseas_stock(order_data)
-                msg1 = order_result.get("msg1", "")
-                order_success = order_result.get("rt_cd") == "0"
+                # KIS 주문 API는 초당 호출 제한이 있어, 해당 오류는 짧게 대기 후 재시도한다.
+                max_attempts = 3
+                backoff_sec = 1.0
+                order_result = None
+                msg1 = ""
+                order_success = False
+                for attempt in range(1, max_attempts + 1):
+                    order_result = order_overseas_stock(order_data)
+                    msg1 = order_result.get("msg1", "") if isinstance(order_result, dict) else ""
+                    order_success = bool(isinstance(order_result, dict) and order_result.get("rt_cd") == "0")
+                    if order_success:
+                        break
+                    # 레이트리밋 계열은 재시도
+                    if "초당" in str(msg1) or "거래건수" in str(msg1) or "too many" in str(msg1).lower():
+                        logger.warning(
+                            "%s(%s) 주문 레이트리밋 감지 → %ss 후 재시도 (%s/%s): %s",
+                            stock_name,
+                            ticker,
+                            backoff_sec,
+                            attempt,
+                            max_attempts,
+                            msg1,
+                        )
+                        time.sleep(backoff_sec)
+                        backoff_sec *= 2
+                        continue
+                    # 그 외 오류는 즉시 종료
+                    break
 
                 save_order(
                     side="buy",
@@ -590,11 +698,11 @@ class StockScheduler:
 
                 if order_success:
                     logger.info(f"{stock_name}({ticker}) 매수 주문 성공: {msg1 or '주문이 접수되었습니다.'}")
-                    summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "order_success", "quantity": quantity, "limit_price": current_price, "exchange_code": exchange_code, "api_message": msg1})
+                    summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "order_success", "quantity": quantity, "limit_price": current_price, "exchange_code": exchange_code, "api_message": msg1, **_bmeta})
                     summary["ordered_count"] = summary.get("ordered_count", 0) + 1
                 else:
                     logger.error(f"{stock_name}({ticker}) 매수 주문 실패: {msg1 or '알 수 없는 오류'}")
-                    summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "order_failed", "error": msg1, "exchange_code": exchange_code})
+                    summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "order_failed", "error": msg1, "exchange_code": exchange_code, **_bmeta})
                     summary["success"] = False
 
                 time.sleep(1)
@@ -614,9 +722,12 @@ _eod_llm_report_daily_registered = False
 
 
 def _run_eod_llm_report_daily() -> None:
-    from app.services.eod_llm_report_service import run_eod_llm_report_daily
+    try:
+        from app.services.eod_llm_report_service import run_eod_llm_report_daily
 
-    run_eod_llm_report_daily()
+        run_eod_llm_report_daily()
+    except Exception as e:
+        logger.error("EOD LLM 리포트 실행 중 예외: %s", e, exc_info=True)
 
 
 def ensure_eod_llm_report_daily_job_scheduled() -> None:
@@ -695,6 +806,57 @@ def get_scheduler_status():
         "schedule_sell_interval_min": settings.SCHEDULE_AUTO_SELL_INTERVAL_MIN,
         "next_auto_buy_at": next_buy_at,
         "next_sell_check_at": next_sell_at,
+        "is_mock": settings.KIS_USE_MOCK,
+    }
+
+
+def get_all_schedules_overview() -> dict:
+    """
+    서버 기동 시점 로그/상태 확인용: 현재 설정된 스케줄 요약 + 다음 실행 예정 시각.
+
+    - KST 기반 일일 잡(경제/매수/EOD LLM)은 다음 실행 시각을 ISO(KST)로 계산
+    - 매도 1분 체크는 장중일 때만 다음 점검(UTC ISO) 반환 (장외면 None)
+    """
+    buy_running = stock_scheduler.running
+    sell_running = stock_scheduler.sell_running
+    econ_running = bool(economic_data_scheduler_running)
+
+    econ_hhmm = (settings.SCHEDULE_ECONOMIC_UPDATE_TIME or "").strip()
+    buy_hhmm = (settings.SCHEDULE_AUTO_BUY_TIME or "").strip()
+    eod_hhmm = (settings.SCHEDULE_EOD_LLM_REPORT_TIME_KST or "").strip()
+
+    next_econ_at = _next_kst_daily_run_iso(econ_hhmm or "00:00")
+    next_buy_at = _next_kst_daily_run_iso(buy_hhmm or "00:00")
+    next_eod_at = _next_kst_daily_run_iso(eod_hhmm or "00:00")
+    next_sell_at = _next_sell_check_iso() if sell_running else None
+
+    return {
+        "economic_update": {
+            "running": econ_running,
+            "time_kst": econ_hhmm,
+            "after_run_inference": bool(settings.SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE),
+            "next_run_at_kst": next_econ_at,
+        },
+        "model_inference": {
+            "enabled": bool(settings.SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE),
+            "trigger": "after_economic_update_if_new_rows",
+        },
+        "auto_buy": {
+            "running": buy_running,
+            "time_kst": buy_hhmm,
+            "next_run_at_kst": next_buy_at,
+        },
+        "auto_sell": {
+            "running": sell_running,
+            "interval_min": int(settings.SCHEDULE_AUTO_SELL_INTERVAL_MIN),
+            "next_check_at_utc": next_sell_at,
+            "note": "장중에만 점검 실행(장외면 next_check_at_utc=None)",
+        },
+        "eod_llm_report": {
+            "enabled": bool(settings.SCHEDULE_EOD_LLM_REPORT_ENABLED),
+            "time_kst": eod_hhmm,
+            "next_run_at_kst": next_eod_at,
+        },
     }
 
 def run_auto_buy_now():
@@ -711,7 +873,7 @@ economic_data_scheduler_thread = None
 
 def _run_economic_data_update(telegram_source: str = "경제스케줄"):
     """경제·주가 DB 갱신 후, 신규 행이 있으면 저장 모델로 추론·예측 테이블 갱신."""
-    elog = logging.getLogger("economic_scheduler")
+    elog = get_logger("economic_scheduler")
     try:
         elog.info("경제 데이터 업데이트 작업 시작")
         result = asyncio.run(update_economic_data_in_background())
@@ -775,8 +937,8 @@ def start_economic_data_scheduler():
     global economic_data_scheduler_running, economic_data_scheduler_thread
     
     if economic_data_scheduler_running:
-        logger = logging.getLogger('economic_scheduler')
-        logger.warning("경제 데이터 스케줄러가 이미 실행 중입니다.")
+        elog = get_logger("economic_scheduler")
+        elog.warning("경제 데이터 스케줄러가 이미 실행 중입니다.")
         return False
     
     schedule.every().day.at(settings.SCHEDULE_ECONOMIC_UPDATE_TIME).do(_run_economic_data_update)
@@ -787,8 +949,8 @@ def start_economic_data_scheduler():
     economic_data_scheduler_thread.daemon = True
     economic_data_scheduler_thread.start()
     
-    logger = logging.getLogger('economic_scheduler')
-    logger.info(
+    elog = get_logger("economic_scheduler")
+    elog.info(
         "경제 데이터 스케줄러 시작 (KST %s, 추론 후행: %s)",
         settings.SCHEDULE_ECONOMIC_UPDATE_TIME,
         settings.SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE,
@@ -801,8 +963,8 @@ def stop_economic_data_scheduler():
     global economic_data_scheduler_running, economic_data_scheduler_thread
     
     if not economic_data_scheduler_running:
-        logger = logging.getLogger('economic_scheduler')
-        logger.warning("경제 데이터 스케줄러가 실행 중이 아닙니다.")
+        elog = get_logger("economic_scheduler")
+        elog.warning("경제 데이터 스케줄러가 실행 중이 아닙니다.")
         return False
     
     # 경제 데이터 관련 작업 취소
@@ -815,8 +977,8 @@ def stop_economic_data_scheduler():
         economic_data_scheduler_thread.join(timeout=5)
         economic_data_scheduler_thread = None
     
-    logger = logging.getLogger('economic_scheduler')
-    logger.info("경제 데이터 업데이트 스케줄러가 중지되었습니다.")
+    elog = get_logger("economic_scheduler")
+    elog.info("경제 데이터 업데이트 스케줄러가 중지되었습니다.")
     return True
 
 def run_economic_data_update_now():

@@ -5,7 +5,6 @@
 """
 
 # ─── 모듈 임포트 ───
-import logging
 import threading
 import time
 from datetime import datetime, timedelta
@@ -17,39 +16,63 @@ import requests
 from app.core.config import settings
 from app.db.supabase import supabase
 from app.services.balance_service import get_overseas_balance
+from app.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ─── 상수 정의 ───
 
 STOCK_TO_TICKER = {
+    "엔비디아": "NVDA",
+    "구글 A": "GOOGL",
     "애플": "AAPL",
     "마이크로소프트": "MSFT",
     "아마존": "AMZN",
-    "구글 A": "GOOGL",
-    "구글 C": "GOOG",
+    "브로드컴": "AVGO",
     "메타": "META",
     "테슬라": "TSLA",
-    "엔비디아": "NVDA",
+    "월마트": "WMT",
+    "마이크론": "MU",
+    "AMD": "AMD",
+    "ASML": "ASML",
+    "인텔": "INTC",
     "코스트코": "COST",
     "넷플릭스": "NFLX",
-    "페이팔": "PYPL",
-    "인텔": "INTC",
     "시스코": "CSCO",
-    "컴캐스트": "CMCSA",
-    "펩시코": "PEP",
-    "암젠": "AMGN",
-    "허니웰 인터내셔널": "HON",
-    "스타벅스": "SBUX",
-    "몬델리즈": "MDLZ",
-    "마이크론": "MU",
-    "브로드컴": "AVGO",
-    "어도비": "ADBE",
-    "텍사스 인스트루먼트": "TXN",
-    "AMD": "AMD",
+    "팔란티어": "PLTR",
+    "램리서치": "LRCX",
     "어플라이드 머티리얼즈": "AMAT",
-    "S&P 500 ETF": "SPY",
-    "QQQ ETF": "QQQ",
+    "텍사스 인스트루먼트": "TXN",
+    "린드": "LIN",
+    "KLA Corp": "KLAC",
+    "Arm": "ARM",
+    "펩시코": "PEP",
+    "티모바일": "TMUS",
+    "아나로그디바이스": "ADI",
+    "샌디스크": "SNDK",
+    "퀄컴": "QCOM",
+    "암젠": "AMGN",
+    "쇼피파이": "SHOP",
+    "씨게이트": "STX",
+    "인튜이티브 서지컬": "ISRG",
+    "앱러빈": "APP",
+    "팔로알토 네트웍스": "PANW",
+    "마벨 테크놀로지": "MRVL",
+    "허니웰 인터내셔널": "HON",
+    "부킹홀딩스": "BKNG",
+    "스타벅스": "SBUX",
+    "콘스텔레이션 에너지": "CEG",
+    "인튜이트": "INTU",
+    "버텍스 파마슈티컬스": "VRTX",
+    "어도비": "ADBE",
+    "컴캐스트": "CMCSA",
+    "케이던스": "CDNS",
+    "시놉시스": "SNPS",
+    "메리어트": "MAR",
+    "메르카도리브레": "MELI",
+    "ADP": "ADP",
+    "에어비앤비": "ABNB",
+    "몬델리즈": "MDLZ",
 }
 
 
@@ -58,7 +81,7 @@ STOCK_TO_TICKER = {
 
 class StockRecommendationService:
     def __init__(self):
-        self.stock_columns = list(STOCK_TO_TICKER.keys())[:-2]
+        self.stock_columns = list(STOCK_TO_TICKER.keys())
         self.lookback_days = settings.TECH_LOOKBACK_DAYS
 
     def calculate_sma(self, series, period):
@@ -158,7 +181,7 @@ class StockRecommendationService:
 
     def get_stock_recommendations(self):
         """
-        Accuracy가 80% 이상이고 상승 확률이 3% 이상인 추천 주식 목록을 반환합니다.
+        Accuracy가 70% 이상이고 상승 확률이 3% 이상인 추천 주식 목록을 반환합니다.
         상승 확률 기준으로 내림차순 정렬됩니다.
         """
         response = supabase.table("stock_analysis_results").select("*").order("created_at", desc=True).execute()
@@ -534,8 +557,9 @@ class StockRecommendationService:
         - sentiment_data: 종목별 감성 분석 데이터
         """
         try:
-            # 1. 보유 종목 정보 가져오기
-            balance_result = get_overseas_balance()
+            # 1. 보유 종목 정보 가져오기 (NASD/NYSE/AMEX 전 거래소)
+            from app.services.balance_service import get_all_overseas_balances
+            balance_result = get_all_overseas_balances()
             if balance_result.get("rt_cd") != "0" or "output1" not in balance_result:
                 return {
                     "message": f"보유 종목 정보를 가져오는데 실패했습니다: {balance_result.get('msg1', '알 수 없는 오류')}",
@@ -631,10 +655,24 @@ class StockRecommendationService:
                 if ticker in sentiment_data:
                     sentiment_score = sentiment_data[ticker].get("average_sentiment_score")
                 
-                if technical_sell_signals >= settings.SELL_TECH_MIN_WITHOUT_SENTIMENT:
-                    sell_reasons.append(f"모든 기술적 지표가 매도 신호: {', '.join(tech_sell_signals_details)}")
-                elif sentiment_score is not None and sentiment_score < settings.SELL_SENTIMENT_MAX and technical_sell_signals >= settings.SELL_TECH_MIN_WITH_SENTIMENT:
-                    sell_reasons.append(f"부정적 감성({sentiment_score:.2f})과 기술적 매도 신호({technical_sell_signals}개): {', '.join(tech_sell_signals_details)}")
+                # ── 조건 2/3: 감성 유무에 따라 기술지표 임계값이 달라짐 ─────────────
+                # 1) 감성 데이터 없음 → 기술지표 n개 이상이면 매도(보수적으로 완화)
+                if sentiment_score is None:
+                    if technical_sell_signals >= settings.SELL_TECH_MIN_WITHOUT_SENTIMENT:
+                        sell_reasons.append(
+                            f"감성 데이터 없음 + 기술적 매도 신호({technical_sell_signals}개): {', '.join(tech_sell_signals_details)}"
+                        )
+                else:
+                    # 2) 감성이 충분히 부정적이면 더 낮은 기술 임계값으로 매도
+                    if sentiment_score < settings.SELL_SENTIMENT_MAX and technical_sell_signals >= settings.SELL_TECH_MIN_WITH_SENTIMENT:
+                        sell_reasons.append(
+                            f"부정적 감성({sentiment_score:.2f})과 기술적 매도 신호({technical_sell_signals}개): {', '.join(tech_sell_signals_details)}"
+                        )
+                    # 3) 감성이 중립/긍정이더라도 기술이 충분히 나쁘면(tech-only) 매도
+                    elif technical_sell_signals >= settings.SELL_TECH_MIN_TECH_ONLY:
+                        sell_reasons.append(
+                            f"기술적 매도 신호({technical_sell_signals}개): {', '.join(tech_sell_signals_details)}"
+                        )
                 
                 # 매도 대상 판단
                 if sell_reasons:

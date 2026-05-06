@@ -6,7 +6,7 @@
 """
 
 # ─── 모듈 임포트 ───
-import logging
+from app.utils.logger import get_logger
 import traceback
 from datetime import datetime, timedelta
 
@@ -16,7 +16,7 @@ from app.core.config import settings
 from app.db.supabase import supabase
 from stock import collect_economic_data
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ─── 헬퍼 함수 ───
 
@@ -94,31 +94,56 @@ stock_columns = [
     "달러/엔",
     "달러/위안",
     "미국 리츠 ETF",
+    "엔비디아",
+    "구글 A",
     "애플",
     "마이크로소프트",
     "아마존",
-    "구글 A",
-    "구글 C",
+    "브로드컴",
     "메타",
     "테슬라",
-    "엔비디아",
+    "월마트",
+    "마이크론",
+    "AMD",
+    "ASML",
+    "인텔",
     "코스트코",
     "넷플릭스",
-    "페이팔",
-    "인텔",
     "시스코",
-    "컴캐스트",
-    "펩시코",
-    "암젠",
-    "허니웰 인터내셔널",
-    "스타벅스",
-    "몬델리즈",
-    "마이크론",
-    "브로드컴",
-    "어도비",
-    "텍사스 인스트루먼트",
-    "AMD",
+    "팔란티어",
+    "램리서치",
     "어플라이드 머티리얼즈",
+    "텍사스 인스트루먼트",
+    "린드",
+    "KLA Corp",
+    "Arm",
+    "펩시코",
+    "티모바일",
+    "아나로그디바이스",
+    "샌디스크",
+    "퀄컴",
+    "암젠",
+    "쇼피파이",
+    "씨게이트",
+    "인튜이티브 서지컬",
+    "앱러빈",
+    "팔로알토 네트웍스",
+    "마벨 테크놀로지",
+    "허니웰 인터내셔널",
+    "부킹홀딩스",
+    "스타벅스",
+    "콘스텔레이션 에너지",
+    "인튜이트",
+    "버텍스 파마슈티컬스",
+    "어도비",
+    "컴캐스트",
+    "케이던스",
+    "시놉시스",
+    "메리어트",
+    "메르카도리브레",
+    "ADP",
+    "에어비앤비",
+    "몬델리즈",
 ]
 
 economic_columns = [
@@ -173,7 +198,6 @@ async def update_economic_data_in_background():
                     "storage_end_date": storage_end_date,
                     "collection_end_date": collection_end_date,
                 },
-                "saved_rows": [],
             }
 
         previous_date = (datetime.strptime(start_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -202,76 +226,44 @@ async def update_economic_data_in_background():
                     "storage_end_date": storage_end_date,
                     "collection_end_date": collection_end_date,
                 },
-                "saved_rows": [],
             }
 
         all_dates = pd.date_range(start=start_date, end=storage_end_date)
-        saved_count = 0
 
+        # 메모리에서 forward-fill 후 bulk upsert (날짜당 HTTP 1회 → 배치당 1회)
+        rows_to_upsert = []
         for date in all_dates:
             date_str = date.strftime("%Y-%m-%d")
+            data_dict: dict = {}
 
             if date in new_data.index:
                 row = new_data.loc[date]
-                logger.info("== %s 데이터 있음 (저장 대상) ==", date_str)
-                for stock in stock_columns[:5]:
-                    if stock in row.index:
-                        logger.info("  원본 %s: %s", stock, row[stock])
-            else:
-                logger.info("== %s 데이터 없음, 이전 데이터 사용 (저장 대상) ==", date_str)
-                row = pd.Series(dtype="object")
-
-            check = supabase.table("economic_and_stock_data").select("*").eq("날짜", date_str).execute()
-
-            data_dict = {}
-            for col_name, value in row.items():
-                if not pd.isna(value):
-                    data_dict[col_name] = value
+                for col_name, value in row.items():
+                    if not pd.isna(value):
+                        # numpy 타입 → Python 기본 타입 변환
+                        data_dict[col_name] = float(value) if hasattr(value, "item") else value
 
             for col_name, value in previous_data.items():
                 if col_name != "날짜" and col_name not in data_dict and value is not None:
                     data_dict[col_name] = value
 
-            if check.data and len(check.data) > 0:
-                existing_data = check.data[0]
-                update_dict = {}
-
-                for col_name, value in data_dict.items():
-                    if col_name not in existing_data or existing_data[col_name] is None:
-                        update_dict[col_name] = value
-
-                if update_dict:
-                    supabase.table("economic_and_stock_data").update(update_dict).eq("날짜", date_str).execute()
-            else:
-                insert_dict = {"날짜": date_str}
-                insert_dict.update(data_dict)
-                supabase.table("economic_and_stock_data").insert(insert_dict).execute()
+            upsert_row: dict = {"날짜": date_str}
+            upsert_row.update(data_dict)
+            rows_to_upsert.append(upsert_row)
 
             if data_dict:
-                previous_data = {"날짜": date_str}
-                previous_data.update(data_dict)
+                previous_data = {"날짜": date_str, **data_dict}
 
-            for stock in stock_columns[:5]:
-                if stock in data_dict:
-                    logger.info("  저장 전 %s: %s", stock, data_dict[stock])
+        # 배치 upsert (500행씩)
+        BATCH_SIZE = 500
+        total_records = len(rows_to_upsert)
+        for i in range(0, total_records, BATCH_SIZE):
+            batch = rows_to_upsert[i : i + BATCH_SIZE]
+            supabase.table("economic_and_stock_data").upsert(batch, on_conflict="날짜").execute()
+            logger.info("upsert %s/%s 완료", min(i + BATCH_SIZE, total_records), total_records)
 
-            saved_count += 1
-
-        if datetime.now().date() in new_data.index:
-            logger.info("== %s 데이터는 수집했지만 저장하지 않음 ==", today)
-
-        total_records = len(all_dates)
-        logger.info("총 %s개 날짜 중 %s개 처리", total_records, saved_count)
-
-        rows_resp = (
-            supabase.table("economic_and_stock_data")
-            .select("*")
-            .gte("날짜", start_date)
-            .lte("날짜", storage_end_date)
-            .order("날짜", desc=False)
-            .execute()
-        )
-        saved_rows = list(rows_resp.data or [])
+        saved_count = total_records
+        logger.info("총 %s개 날짜 bulk upsert 완료", total_records)
 
         return {
             "success": True,
@@ -283,7 +275,6 @@ async def update_economic_data_in_background():
                 "storage_end_date": storage_end_date,
                 "collection_end_date": collection_end_date,
             },
-            "saved_rows": saved_rows,
         }
     except Exception as e:
         logger.exception("경제 데이터 업데이트 실패: %s", e)

@@ -8,12 +8,13 @@ from __future__ import annotations
 
 # ─── 모듈 임포트 ───
 import json
-import logging
 from typing import Any, Optional
 
 import requests
 
-logger = logging.getLogger(__name__)
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # ─── 상수 정의 ───
 

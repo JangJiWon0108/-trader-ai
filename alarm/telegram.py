@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Literal, Optional
 
 import requests
 
-logger = logging.getLogger(__name__)
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 ParseMode = Optional[Literal["HTML", "MarkdownV2"]]
 

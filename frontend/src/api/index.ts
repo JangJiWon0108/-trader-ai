@@ -144,6 +144,8 @@ export interface SchedulerStatus {
   next_auto_buy_at?: string
   /** 장중 매도 점검 다음 분(UTC ISO). 장외·매도 중지 시 null */
   next_sell_check_at?: string | null
+  /** true=모의투자, false=실전투자 */
+  is_mock?: boolean
 }
 
 export interface OrderFillRow {

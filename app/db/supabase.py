@@ -6,13 +6,12 @@ Supabase 클라이언트 싱글톤.
 """
 
 # ─── 모듈 임포트 ───
-import logging
-
 from supabase import Client, create_client
 
 from app.core.config import settings
+from app.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ─── 클라이언트 생성 ───
 

@@ -7,7 +7,6 @@
 
 # ─── 모듈 임포트 ───
 import json
-import logging
 import time
 from datetime import datetime, timedelta
 from threading import Lock
@@ -18,8 +17,9 @@ import requests
 from app.core.config import settings
 from app.db.supabase import supabase
 from app.services.auth_service import parse_expiration_date
+from app.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ─── 상수 정의 (토큰 캐시) ───
 
@@ -268,8 +268,8 @@ def get_all_overseas_balances():
             else:
                 logger.info(f"{exchange} 거래소 잔고 조회 실패: {result.get('msg1', '알 수 없는 오류')}")
                 
-            # API 요청 간 지연
-            time.sleep(0.5)
+            # API 요청 간 지연 (KIS 초당 1건 제한)
+            time.sleep(1.1)
             
         except Exception as e:
             logger.info(f"{exchange} 거래소 잔고 조회 중 오류: {str(e)}")

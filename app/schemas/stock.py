@@ -14,10 +14,11 @@ from pydantic import BaseModel
 
 class StockPrediction(BaseModel):
     stock: str
-    last_price: float
-    predicted_price: float
-    rise_probability: float
-    recommendation: str
+    # Supabase 원천 컬럼이 NULL일 수 있어 프론트 타입(Nullable)과 정합을 맞춘다.
+    last_price: Optional[float] = None
+    predicted_price: Optional[float] = None
+    rise_probability: Optional[float] = None
+    recommendation: Optional[str] = None
     analysis: Optional[str] = None
 
 

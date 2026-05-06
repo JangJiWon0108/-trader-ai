@@ -15,6 +15,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -277,6 +278,133 @@ def generate_analysis(row: pd.Series) -> str:
     return f"{name} is expected to fall by about {-rise_prob:.2f}%. A cautious approach is recommended."
 
 
+def _extract_json_payload(text: str) -> str:
+    """
+    LLM 응답에서 JSON 배열/객체 본문만 추출.
+    - 우선 [...] 배열을 찾고, 없으면 {...} 객체를 찾는다.
+    """
+    s = (text or "").strip()
+    if not s:
+        raise ValueError("빈 응답")
+    m = re.search(r"\[[\s\S]*\]", s)
+    if m:
+        return m.group(0)
+    m = re.search(r"\{[\s\S]*\}", s)
+    if m:
+        return m.group(0)
+    raise ValueError("JSON 본문을 찾지 못함")
+
+
+def apply_llm_recommendation_layer(
+    final: pd.DataFrame,
+    *,
+    timeout_sec: float,
+    max_stocks: int,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    final(DataFrame)에 대해 LLM이 Recommendation/Analysis를 생성해 덮어쓴다.
+    실패 시 기존 규칙 기반 값을 유지한다.
+    """
+    from app.core.config import settings
+
+    llm_info: dict = {
+        "enabled": True,
+        "attempted": False,
+        "applied": False,
+        "error": None,
+        "model_id": getattr(settings, "STOCK_ANALYSIS_GEMINI_MODEL_ID", None),
+        "timeout_sec": float(timeout_sec),
+        "max_stocks": int(max_stocks),
+    }
+
+    if not settings.GEMINI_API_KEY:
+        llm_info["enabled"] = False
+        llm_info["error"] = "GEMINI_API_KEY missing"
+        return final, llm_info
+
+    from llm import GeminiApiError, get_llm_answer
+
+    df = final.copy()
+    n = min(len(df), int(max_stocks))
+    if n <= 0:
+        llm_info["error"] = "no rows"
+        return df, llm_info
+
+    # LLM 입력을 최소화: 의사결정에 필요한 핵심만
+    payload_rows = []
+    for _, r in df.head(n).iterrows():
+        payload_rows.append(
+            {
+                "Stock": r.get("Stock"),
+                "Last Actual Price": r.get("Last Actual Price"),
+                "Predicted Future Price": r.get("Predicted Future Price"),
+                "Predicted Rise": r.get("Predicted Rise"),
+                "Rise Probability (%)": r.get("Rise Probability (%)"),
+                "MAE": r.get("MAE"),
+                "RMSE": r.get("RMSE"),
+                "MAPE (%)": r.get("MAPE (%)"),
+                "Accuracy (%)": r.get("Accuracy (%)"),
+            }
+        )
+
+    prompt = (
+        "역할: 한국어로 주식 추천/분석을 생성하는 애널리스트.\n"
+        "요구사항:\n"
+        "- 입력 JSON 배열(각 종목 1개)을 보고 각 종목에 대해 Recommendation과 Analysis를 생성.\n"
+        "- Recommendation은 아래 중 하나만: STRONG BUY, BUY, SELL, No Data\n"
+        "- Analysis는 1~2문장, 과장 금지(투자 조언 단정 금지), 숫자/조건 근거를 짧게 포함.\n"
+        "- 출력은 반드시 JSON 배열만. 다른 텍스트 금지.\n"
+        "- 각 원소는 {\"Stock\":..., \"Recommendation\":..., \"Analysis\":...} 형태.\n\n"
+        f"입력:\n{json.dumps(payload_rows, ensure_ascii=False, default=str)}"
+    )
+
+    llm_info["attempted"] = True
+    try:
+        raw = get_llm_answer(
+            prompt,
+            model_id=str(getattr(settings, "STOCK_ANALYSIS_GEMINI_MODEL_ID", "") or "").strip() or None,
+            timeout_sec=float(timeout_sec),
+        )
+        j = _extract_json_payload(raw)
+        parsed = json.loads(j)
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        if not isinstance(parsed, list):
+            raise ValueError("LLM JSON이 배열이 아님")
+    except (GeminiApiError, json.JSONDecodeError, ValueError) as e:
+        # 실패 시 그대로 반환 (규칙 기반 Recommendation/Analysis 유지)
+        llm_info["error"] = str(e)
+        print(f"[WARN] LLM Recommendation/Analysis 생성 실패 — fallback 사용: {e}")
+        return df, llm_info
+
+    by_stock = {}
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        stock = item.get("Stock")
+        rec = item.get("Recommendation")
+        ana = item.get("Analysis")
+        if not stock:
+            continue
+        if isinstance(rec, str) and isinstance(ana, str):
+            by_stock[str(stock)] = {"Recommendation": rec.strip(), "Analysis": ana.strip()}
+
+    if not by_stock:
+        llm_info["error"] = "empty llm output"
+        return df, llm_info
+
+    df["Recommendation"] = df.apply(
+        lambda r: by_stock.get(r.get("Stock"), {}).get("Recommendation", r.get("Recommendation")),
+        axis=1,
+    )
+    df["Analysis"] = df.apply(
+        lambda r: by_stock.get(r.get("Stock"), {}).get("Analysis", r.get("Analysis")),
+        axis=1,
+    )
+    llm_info["applied"] = True
+    return df, llm_info
+
+
 def dataframe_rows_to_jsonable_records(result_df: pd.DataFrame) -> list[dict]:
     """DB·JSON 직렬화에 맞춘 행 목록 (NaN/ numpy 스칼라 정규화)."""
     records: list[dict] = []
@@ -308,6 +436,25 @@ def build_final_analysis(pred_df: pd.DataFrame, target_columns: list[str], forec
     final = final.sort_values(by="Rise Probability (%)", ascending=False)
     final["Recommendation"] = final.apply(generate_recommendation, axis=1)
     final["Analysis"] = final.apply(generate_analysis, axis=1)
+    # 선택: LLM 레이어로 Recommendation/Analysis 덮어쓰기(실패 시 규칙 기반 유지)
+    try:
+        from app.core.config import settings
+
+        if getattr(settings, "STOCK_ANALYSIS_USE_LLM", False):
+            final, llm_info = apply_llm_recommendation_layer(
+                final,
+                timeout_sec=float(getattr(settings, "STOCK_ANALYSIS_LLM_TIMEOUT_SEC", 60.0)),
+                max_stocks=int(getattr(settings, "STOCK_ANALYSIS_LLM_MAX_STOCKS", 60)),
+            )
+            final.attrs["llm_layer"] = llm_info
+    except Exception as e:
+        final.attrs["llm_layer"] = {
+            "enabled": True,
+            "attempted": True,
+            "applied": False,
+            "error": str(e),
+        }
+        print(f"[WARN] LLM 레이어 적용 중 예외 — fallback 유지: {e}")
     order = [
         "Stock",
         "MAE",
@@ -396,6 +543,7 @@ def run_inference_and_save_to_db(
 
     pred_from_db = get_predictions_from_db(supabase)
     final = build_final_analysis(pred_from_db, target_columns, forecast_horizon)
+    llm_layer = final.attrs.get("llm_layer") if hasattr(final, "attrs") else None
     analysis_records = dataframe_rows_to_jsonable_records(final)
     save_analysis_to_db(supabase, final)
     print("\n=== 완료: predicted_stocks + stock_analysis_results 갱신 ===")
@@ -407,6 +555,7 @@ def run_inference_and_save_to_db(
         "prediction_rows": len(result_data),
         "analysis_rows": len(final),
         "analysis_records": analysis_records,
+        "llm_layer": llm_layer,
     }
 
 

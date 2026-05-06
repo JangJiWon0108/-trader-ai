@@ -1,6 +1,15 @@
+import { useApi } from '../hooks/useApi'
+import { fetchSchedulerStatus } from '../api'
 import { theme } from '../theme'
 
 export default function PageHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+  const scheduler = useApi(fetchSchedulerStatus)
+  const isMock = scheduler.data?.is_mock ?? true
+  const pillLabel = isMock ? '모의 투자' : '실제 투자'
+  const pillColor = isMock ? theme.primaryBright : theme.positive
+  const pillBg = isMock ? 'rgba(79, 70, 229, 0.1)' : 'rgba(5, 150, 105, 0.1)'
+  const pillBorder = isMock ? 'rgba(79, 70, 229, 0.2)' : 'rgba(5, 150, 105, 0.25)'
+
   return (
     <header style={{ marginBottom: theme.gutter }}>
       <div
@@ -16,9 +25,9 @@ export default function PageHeader({ title, subtitle }: { title: string; subtitl
           fontWeight: 600,
           letterSpacing: '0.12em',
           textTransform: 'uppercase',
-          color: theme.primaryBright,
-          background: 'rgba(79, 70, 229, 0.1)',
-          border: `1px solid rgba(79, 70, 229, 0.2)`,
+          color: pillColor,
+          background: pillBg,
+          border: `1px solid ${pillBorder}`,
           marginBottom: 12,
         }}
       >
@@ -27,11 +36,11 @@ export default function PageHeader({ title, subtitle }: { title: string; subtitl
             width: 6,
             height: 6,
             borderRadius: '50%',
-            background: theme.positive,
-            boxShadow: `0 0 8px ${theme.positive}`,
+            background: pillColor,
+            boxShadow: `0 0 8px ${pillColor}`,
           }}
         />
-        모의 프리뷰
+        {pillLabel}
       </div>
       <h1
         style={{

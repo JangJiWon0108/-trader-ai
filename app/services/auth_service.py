@@ -5,13 +5,14 @@ KIS 토큰 만료 시각 등 문자열 → timezone-aware datetime 파싱.
 """
 
 # ─── 모듈 임포트 ───
-import logging
 import re
 from datetime import datetime, timedelta
 
 import pytz
 
-logger = logging.getLogger(__name__)
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # ─── 공개 API ───
 

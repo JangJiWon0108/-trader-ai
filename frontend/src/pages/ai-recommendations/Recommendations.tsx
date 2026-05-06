@@ -146,7 +146,7 @@ export default function Recommendations() {
                       <td style={{ ...td, fontWeight: 700 }}>{r.ticker}</td>
                       <td style={td}>{r.stock_name}</td>
                       <td style={td}><Badge variant={signalVariant(r.recommendation)} /></td>
-                      <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: r.rise_probability >= 50 ? theme.positive : theme.negative }}>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: r.rise_probability > 0 ? theme.positive : theme.negative }}>
                         {fmt(r.rise_probability, 1)}%
                       </td>
                       <td style={{ ...td, textAlign: 'right' }}>${fmt(r.last_price)}</td>
@@ -191,7 +191,7 @@ export default function Recommendations() {
                     <tr key={p.stock}>
                       <td style={{ ...td, fontWeight: 600 }}>{p.stock}</td>
                       <td style={td}><Badge variant={signalVariant(p.recommendation ?? '')} /></td>
-                      <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: (p.rise_probability ?? 0) >= 50 ? theme.positive : theme.negative }}>
+                      <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: (p.rise_probability ?? 0) > 0 ? theme.positive : theme.negative }}>
                         {fmt(p.rise_probability, 1)}%
                       </td>
                       <td style={{ ...td, textAlign: 'right' }}>${fmt(p.last_price)}</td>

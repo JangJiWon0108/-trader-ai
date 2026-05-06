@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,8 +16,9 @@ from typing import Any
 import pytz
 
 from app.core.config import settings
+from app.utils.logger import get_logger
 
-log = logging.getLogger("eod_llm_report")
+log = get_logger("eod_llm_report")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STATE_DIR = _REPO_ROOT / ".cache"
@@ -200,7 +200,7 @@ def run_eod_llm_report_daily() -> None:
         log.info("EOD LLM 리포트 생성 시작 (집계 NY date=%s)", target_ny_date)
         ctx = gather_eod_llm_context(target_ny_date)
         prompt = _build_prompt(target_ny_date, ctx)
-        report = get_llm_answer(prompt)
+        report = get_llm_answer(prompt, model_id=(settings.EOD_LLM_GEMINI_MODEL_ID or None))
         tg_sent = notify_telegram_daily_eod_report(report, ny_date=target_ny_date)
         if tg_sent:
             _write_last_sent_ny_date(target_ny_date)

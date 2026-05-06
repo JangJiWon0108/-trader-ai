@@ -27,3 +27,4 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "yfinance>=1.3.0",
 ]
+
