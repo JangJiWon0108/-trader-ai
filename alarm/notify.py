@@ -15,6 +15,24 @@ logger = get_logger(__name__)
 # ─── 헬퍼 함수 ───
 
 
+def _tg_prefix() -> str:
+    """
+    텔레그램 메시지 접두사.
+    - TELEGRAM_MESSAGE_PREFIX가 있으면 사용
+    - 없으면 PROJECT_NAME 기반: [<PROJECT_NAME>]
+    """
+    try:
+        from app.core.config import settings
+
+        v = (settings.TELEGRAM_MESSAGE_PREFIX or "").strip()
+        if v:
+            return v
+        name = (settings.PROJECT_NAME or "").strip() or "Trader-AI"
+        return f"[{name}]"
+    except Exception:
+        return "[Trader-AI]"
+
+
 def _json_pretty(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2, default=str)
 
@@ -24,7 +42,8 @@ def _json_pretty(data: Any) -> str:
 
 def notify_telegram_daily_eod_report(report_text: str, *, ny_date: str) -> bool:
     """미국장 마감 일일 LLM 리포트. 전송 성공 시 True."""
-    body = f"[Trader-AI] 미국장 마감 일일 리포트 (NY {ny_date})\n\n{(report_text or '').strip()}"
+    p = _tg_prefix()
+    body = f"{p} 미국장 마감 일일 리포트 (NY {ny_date})\n\n{(report_text or '').strip()}"
     return bool(send_telegram_long_text(body))
 
 
@@ -35,11 +54,12 @@ def notify_telegram_eod_report_generation_failed(
     phase: str = "general",
 ) -> None:
     """EOD 리포트 생성/전송 실패 알림."""
+    # 텔레그램은 "실패 사유" 위주로 짧게. (traceback은 로그로 충분)
+    p = _tg_prefix()
     body = "\n".join(
         [
-            f"[Trader-AI] EOD LLM 리포트 실패 (NY {ny_date}, phase={phase})",
-            str(exc),
-            traceback.format_exc(),
+            f"{p} EOD LLM 리포트 실패 (NY {ny_date}, phase={phase})",
+            f"사유: {str(exc)}",
         ]
     )
     if not send_telegram_long_text(body):
@@ -94,7 +114,8 @@ def notify_telegram_auto_sell_run(summary: dict | None) -> bool:
     ordered = [i for i in items if i.get("outcome") == "order_success"]
     failed_order = [i for i in items if i.get("outcome") == "order_failed"]
 
-    lines = ["[Trader-AI] 자동 매도 점검"]
+    p = _tg_prefix()
+    lines = [f"{p} 자동 매도 점검"]
     lines.append(f"⏰ {kst}  (NY: {ny})")
 
     if candidate_count == 0:
@@ -159,7 +180,7 @@ def notify_telegram_auto_sell_run(summary: dict | None) -> bool:
     return sent
 
 
-def notify_telegram_auto_buy_run(summary: dict | None) -> bool:
+def notify_telegram_auto_buy_run(summary: dict | None, *, label: str | None = None) -> bool:
     """자동 매수 결과 — 잔고·후보 분석·수익률 포함."""
     summary = summary or {}
     kst = summary.get("kst", "")
@@ -173,7 +194,9 @@ def notify_telegram_auto_buy_run(summary: dict | None) -> bool:
     already = [i for i in items if i.get("outcome") == "already_holding"]
     failed = [i for i in items if i.get("outcome") == "order_failed"]
 
-    lines = ["[Trader-AI] 자동 매수 결과"]
+    p = _tg_prefix()
+    suffix = f" {label.strip()}" if (label or "").strip() else ""
+    lines = [f"{p} 자동 매수 결과{suffix}"]
     lines.append(f"⏰ {kst}")
 
     if status in ("no_candidates", "balance_error", "balance_exception"):
@@ -235,9 +258,10 @@ def notify_telegram_auto_buy_run(summary: dict | None) -> bool:
 
 def notify_telegram_trading_job_exception(job_label: str, exc: BaseException) -> None:
     """자동 매수/매도 작업 전체 예외."""
+    p = _tg_prefix()
     body = "\n".join(
         [
-            f"[Trader-AI] {job_label} 작업 전체 예외",
+            f"{p} {job_label} 작업 전체 예외",
             str(exc),
             traceback.format_exc(),
         ]
@@ -259,13 +283,13 @@ def notify_telegram_economic_update(result: dict | None, *, source: str) -> bool
         }
         body = "\n".join(
             [
-                f"[Trader-AI] 경제·주가 DB 갱신 성공 ({source})",
+                f"{_tg_prefix()} 경제·주가 DB 갱신 성공 ({source})",
                 _json_pretty(payload),
             ]
         )
     else:
         parts = [
-            f"[Trader-AI] 경제·주가 DB 갱신 실패 ({source})",
+            f"{_tg_prefix()} 경제·주가 DB 갱신 실패 ({source})",
             f"error: {result.get('error', '알 수 없음')}",
         ]
         tb = result.get("traceback")
@@ -292,7 +316,7 @@ def notify_telegram_inference_success(inf: dict | None, *, source: str) -> bool:
     }
     body = "\n".join(
         [
-            f"[Trader-AI] 추론·DB 갱신 성공 ({source})",
+            f"{_tg_prefix()} 추론·DB 갱신 성공 ({source})",
             _json_pretty(payload),
         ]
     )
@@ -306,7 +330,7 @@ def notify_telegram_inference_failure(exc: BaseException, *, source: str) -> boo
     """추론·DB 갱신 실패."""
     body = "\n".join(
         [
-            f"[Trader-AI] 추론·DB 갱신 실패 ({source})",
+            f"{_tg_prefix()} 추론·DB 갱신 실패 ({source})",
             str(exc),
             traceback.format_exc(),
         ]
@@ -314,4 +338,169 @@ def notify_telegram_inference_failure(exc: BaseException, *, source: str) -> boo
     sent = bool(send_telegram_long_text(body))
     if not sent:
         logger.debug("텔레그램 미설정 또는 전송 실패(추론 실패 %s)", source)
+    return sent
+
+
+def notify_telegram_inference_skipped(
+    *,
+    source: str,
+    reason: str,
+    context: dict | None = None,
+) -> bool:
+    """추론 스킵 알림(할 게 없거나 조건 불충족이어도 결과를 통일성 있게 전송)."""
+    payload = {"reason": reason, "context": context or {}}
+    body = "\n".join(
+        [
+            f"{_tg_prefix()} 추론 스킵 ({source})",
+            _json_pretty(payload),
+        ]
+    )
+    sent = bool(send_telegram_long_text(body))
+    if not sent:
+        logger.debug("텔레그램 미설정 또는 전송 실패(추론 스킵 %s)", source)
+    return sent
+
+
+def notify_telegram_sentiment_update(result: dict | None, *, source: str) -> bool:
+    """뉴스 감성 분석 결과 전송 (성공·실패 모두)."""
+    result = result or {}
+    if result.get("error"):
+        body = "\n".join(
+            [
+                f"{_tg_prefix()} 뉴스 감성 분석 실패 ({source})",
+                str(result.get("error")),
+            ]
+        )
+    else:
+        results = result.get("results") or []
+        analyzed = sum(1 for r in results if r.get("average_sentiment_score") is not None)
+        no_article = sum(1 for r in results if r.get("message") == "관련 기사 없음")
+        body = "\n".join(
+            [
+                f"{_tg_prefix()} 뉴스 감성 분석 완료 ({source})",
+                _json_pretty({
+                    "전체_티커수": len(results),
+                    "감성점수_저장": analyzed,
+                    "기사없음": no_article,
+                    "요약": result.get("message"),
+                }),
+            ]
+        )
+    sent = bool(send_telegram_long_text(body))
+    if not sent:
+        logger.debug("텔레그램 미설정 또는 전송 실패(감성 분석 %s)", source)
+    return sent
+
+
+def notify_telegram_sentiment_skipped(
+    *,
+    source: str,
+    reason: str,
+    context: dict | None = None,
+) -> bool:
+    """감성 분석 스킵 알림(이미 적재돼도 결과를 통일성 있게 전송)."""
+    payload = {"reason": reason, "context": context or {}}
+    body = "\n".join(
+        [
+            f"{_tg_prefix()} 뉴스 감성 분석 스킵 ({source})",
+            _json_pretty(payload),
+        ]
+    )
+    sent = bool(send_telegram_long_text(body))
+    if not sent:
+        logger.debug("텔레그램 미설정 또는 전송 실패(감성 스킵 %s)", source)
+    return sent
+
+
+def notify_telegram_trading_initialize(result: dict | None, *, source: str = "api") -> bool:
+    """
+    모의투자 초기화(거래 상태 리셋) 결과를 텔레그램으로 전송한다.
+
+    - DB 삭제(테이블별 ok/deleted/error)
+    - 시작자금(seed) 반영 여부 및 best-effort 환율/USD 추정치
+    - KIS reset 시도/스킵/실패 사유
+    """
+    result = result or {}
+    kis = result.get("kis_reset") or {}
+    db = result.get("db_reset") or {}
+
+    ok = result.get("ok")
+    db_ok = result.get("db_ok", db.get("ok"))
+    kis_attempted = result.get("kis_attempted", kis.get("attempted"))
+    kis_skipped = result.get("kis_skipped", kis.get("skipped"))
+    kis_success = result.get("kis_success", kis.get("success"))
+    kis_market_hours = result.get("kis_market_hours", kis.get("market_hours"))
+
+    title_status = "성공" if ok else "실패/경고"
+    p = _tg_prefix()
+    lines: list[str] = [f"{p} 모의투자 초기화 결과 ({title_status}, source={source})"]
+
+    # 요약 라인
+    lines.append(
+        _json_pretty(
+            {
+                "ok": ok,
+                "db_ok": db_ok,
+                "kis": {
+                    "attempted": kis_attempted,
+                    "skipped": kis_skipped,
+                    "success": kis_success,
+                    "market_hours": kis_market_hours,
+                },
+            }
+        )
+    )
+
+    # DB 삭제 상태
+    del_status = (db or {}).get("delete_status") or {}
+    if isinstance(del_status, dict) and del_status:
+        lines.append("\n━━ DB 삭제 상태 ━━")
+        for table, st in del_status.items():
+            if not isinstance(st, dict):
+                lines.append(f"- {table}: {st}")
+                continue
+            tok = "✅" if st.get("ok") else "❌"
+            deleted = st.get("deleted")
+            err = st.get("error")
+            extra = []
+            if deleted is not None:
+                extra.append(f"deleted={deleted}")
+            if err:
+                extra.append(f"error={err}")
+            lines.append(f"- {tok} {table}" + (f" · {', '.join(extra)}" if extra else ""))
+
+    # Seed(시작 자금) 상태
+    lines.append("\n━━ Seed(시작자금) ━━")
+    lines.append(
+        _json_pretty(
+            {
+                "seed_ok": db.get("seed_ok", db.get("holdings_summary_seeded")),
+                "initial_cash_krw": db.get("initial_cash_krw"),
+                "usdkrw_best_effort": db.get("usdkrw_best_effort"),
+                "usdkrw_source": db.get("usdkrw_source"),
+                "initial_cash_usd_best_effort": db.get("initial_cash_usd_best_effort"),
+            }
+        )
+    )
+
+    # KIS reset 상태
+    lines.append("\n━━ KIS reset ━━")
+    if kis_skipped:
+        reason = kis.get("reason") or "skipped"
+        lines.append(f"- ⚠️ 장외/조건으로 스킵: {reason}")
+    elif kis_attempted and kis_success is False:
+        lines.append(f"- ❌ 실패: {kis.get('error') or 'unknown'}")
+    elif kis_attempted:
+        lines.append("- ✅ 시도/완료")
+    else:
+        lines.append("- ℹ️ 미시도")
+
+    # 전체 raw 결과(디버깅용)
+    lines.append("\n━━ RAW ━━")
+    lines.append(_json_pretty(result))
+
+    body = "\n".join(lines)
+    sent = bool(send_telegram_long_text(body))
+    if not sent:
+        logger.debug("텔레그램 미설정 또는 전송 실패(모의투자 초기화 %s)", source)
     return sent

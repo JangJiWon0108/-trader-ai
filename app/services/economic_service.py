@@ -8,7 +8,7 @@
 # ─── 모듈 임포트 ───
 from app.utils.logger import get_logger
 import traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -176,8 +176,15 @@ async def update_economic_data_in_background():
 
         start_date = get_last_updated_date()
 
-        today = datetime.now().strftime("%Y-%m-%d")
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        # 저장 종료일은 KST '어제'로 고정 (서버/컨테이너 타임존(UTC) 차이로 날짜가 흔들리는 문제 방지)
+        import pytz
+
+        kst = pytz.timezone("Asia/Seoul")
+        now_kst = datetime.now(kst)
+        today = now_kst.strftime("%Y-%m-%d")
+        yesterday = (now_kst - timedelta(days=1)).strftime("%Y-%m-%d")
+        # wide 테이블(economic_and_stock_data) 행 단위 적재 시각
+        synced_at = datetime.now(timezone.utc).isoformat()
 
         collection_end_date = today
         storage_end_date = yesterday
@@ -249,6 +256,7 @@ async def update_economic_data_in_background():
 
             upsert_row: dict = {"날짜": date_str}
             upsert_row.update(data_dict)
+            upsert_row["synced_at"] = synced_at
             rows_to_upsert.append(upsert_row)
 
             if data_dict:

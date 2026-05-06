@@ -1,5 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from app.services.stock_recommendation_service import StockRecommendationService
+from datetime import datetime
+import pytz
+from app.db.supabase import supabase
 from app.utils.scheduler import (
     run_auto_buy_now,
     start_scheduler,
@@ -12,6 +15,45 @@ from app.utils.scheduler import (
 
 router = APIRouter()
 service = StockRecommendationService()
+
+@router.get("/sentiment/status", response_model=dict)
+async def read_sentiment_status():
+    """
+    Alpha Vantage 기반 뉴스/감성(ticker_sentiment_analysis) 적재 상태를 반환합니다.
+
+    판단 기준:
+    - calculation_date 최신값을 KST로 변환했을 때 '오늘(KST)'이면 today_loaded=True
+    """
+    try:
+        resp = (
+            supabase.table("ticker_sentiment_analysis")
+            .select("calculation_date")
+            .order("calculation_date", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        latest_raw = (rows[0] or {}).get("calculation_date") if rows else None
+
+        kst = pytz.timezone("Asia/Seoul")
+        today_kst = datetime.now(kst).date()
+
+        latest_kst_date = None
+        latest_iso = None
+        if latest_raw:
+            dt = datetime.fromisoformat(str(latest_raw).replace("Z", "+00:00"))
+            latest_iso = dt.isoformat()
+            latest_kst_date = dt.astimezone(kst).date().isoformat()
+
+        today_loaded = bool(latest_kst_date == today_kst.isoformat())
+        return {
+            "today_kst": today_kst.isoformat(),
+            "latest_kst_date": latest_kst_date,
+            "latest_calculation_date": latest_iso,
+            "today_loaded": today_loaded,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"감성 적재 상태 조회 실패: {str(e)}")
 
 @router.get("/recommended-stocks", response_model=dict)
 async def get_recommended_stocks_route():

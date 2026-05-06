@@ -25,7 +25,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from alarm.notify import notify_telegram_economic_update
+from alarm.notify import notify_telegram_economic_update, notify_telegram_inference_skipped
 from app.api.api import api_router
 from app.core.config import settings
 from app.services.economic_service import update_economic_data_in_background
@@ -47,42 +47,6 @@ logger = get_logger(__name__)
 # ─── lifespan ───
 
 
-def _has_today_sentiment_data_kst() -> bool:
-    """
-    Alpha Vantage 호출 제한을 피하기 위해, 오늘(KST) 감성 데이터가 이미 있으면 True.
-    - ticker_sentiment_analysis 최신 calculation_date 기준으로 판단
-    - 테이블이 비어있거나 calculation_date가 없으면 False
-    """
-    try:
-        from datetime import datetime
-
-        import pytz
-
-        from app.db.supabase import supabase
-
-        resp = (
-            supabase.table("ticker_sentiment_analysis")
-            .select("calculation_date")
-            .order("calculation_date", desc=True)
-            .limit(1)
-            .execute()
-        )
-        rows = resp.data or []
-        if not rows:
-            return False
-        raw = (rows[0] or {}).get("calculation_date")
-        if not raw:
-            return False
-
-        kst = pytz.timezone("Asia/Seoul")
-        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        dt_kst = dt.astimezone(kst)
-        today_kst = datetime.now(kst).date()
-        return dt_kst.date() == today_kst
-    except Exception:
-        # 판단 실패 시: 안전하게 "없다"로 간주하면 호출이 발생할 수 있으니,
-        # 호출 제한이 중요한 운영 특성상 "있다"로 간주해 스킵한다.
-        return True
 
 
 @asynccontextmanager
@@ -102,7 +66,7 @@ app = FastAPI(title="주식 분석 및 추천 API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -156,26 +120,37 @@ async def startup():
                 bool(settings.SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE),
                 updated,
             )
+            # 스케줄 경로와 동일하게, 스킵이어도 결과를 텔레그램으로 통일성 있게 전송
+            try:
+                if not settings.SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE:
+                    reason = "disabled_by_settings(SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE=false)"
+                elif not (isinstance(result, dict) and result.get("success")):
+                    reason = "economic_update_failed_or_skipped"
+                elif updated == 0:
+                    reason = "no_new_rows(updated_records=0)"
+                else:
+                    reason = f"unknown_condition(updated_records={updated})"
+                notify_telegram_inference_skipped(
+                    source="서버시작_추론",
+                    reason=reason,
+                    context={
+                        "economic_success": bool((result or {}).get("success")) if isinstance(result, dict) else False,
+                        "updated_records": updated,
+                    },
+                )
+            except Exception:
+                logger.warning("서버 시작: 추론 스킵 텔레그램 전송 실패(무시)", exc_info=True)
     except Exception as e:
         logger.exception("서버 시작: 추론 1회 실행 실패: %s", e)
 
-    # 서버 시작 시 1회: 뉴스 감성 분석(Alpha Vantage)
-    # - 하루 1회만 수행: 오늘(KST) 데이터가 있으면 스킵
-    try:
-        if _has_today_sentiment_data_kst():
-            logger.info("서버 시작: 감성 데이터가 오늘(KST) 이미 존재 → 감성 분석 스킵")
-        else:
-            logger.info("서버 시작: 감성 데이터 없음/이전 날짜 → 뉴스 감성 분석 1회 실행")
-            service = StockRecommendationService()
-            await asyncio.to_thread(service.fetch_and_store_sentiment_for_recommendations)
-    except Exception as e:
-        logger.exception("서버 시작: 뉴스 감성 분석 1회 실행 실패: %s", e)
-
-    try:
-        logger.info("서버 시작: 자동 매수 1회 실행")
-        await asyncio.to_thread(run_auto_buy_now)
-    except Exception as e:
-        logger.exception("서버 시작: 자동 매수 1회 실행 실패: %s", e)
+    if settings.STARTUP_RUN_AUTO_BUY:
+        try:
+            logger.info("서버 시작: 자동 매수 1회 실행 (STARTUP_RUN_AUTO_BUY=true)")
+            await asyncio.to_thread(run_auto_buy_now)
+        except Exception as e:
+            logger.exception("서버 시작: 자동 매수 1회 실행 실패: %s", e)
+    else:
+        logger.info("서버 시작: 자동 매수 스킵 (STARTUP_RUN_AUTO_BUY=false)")
 
     start_economic_data_scheduler()
     start_scheduler()

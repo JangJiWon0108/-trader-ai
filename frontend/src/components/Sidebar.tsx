@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { theme } from '../theme'
 import './Sidebar.css'
+import MarketStatusCard from './MarketStatusCard'
 
 const menus = [
   { path: '/', label: '대시보드', icon: '⊞' },
@@ -9,6 +10,9 @@ const menus = [
   { path: '/auto-trading', label: '자동매매 현황', icon: '⟳' },
   { path: '/orders', label: '주문 내역', icon: '≡' },
   { path: '/economic', label: '경제 지표', icon: '◉' },
+  { path: '/alpha-advantage', label: '알파 어드밴티지', icon: 'α' },
+  { path: '/inference-history', label: 'AI 추론 히스토리', icon: '∑' },
+  { path: '/admin', label: '관리자', icon: '⚙' },
 ]
 
 export default function Sidebar() {
@@ -58,22 +62,7 @@ export default function Sidebar() {
         ))}
       </nav>
       <div style={{ flex: 1 }} />
-      <div
-        className="sidebar-foot"
-        style={{
-          margin: '0 18px 12px',
-          padding: 14,
-          borderRadius: theme.radiusMd,
-          background: 'rgba(15, 23, 42, 0.65)',
-          border: '1px solid rgba(148, 163, 184, 0.15)',
-          fontFamily: theme.fontSans,
-        }}
-      >
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: '#818cf8', marginBottom: 6 }}>
-          NEXT
-        </div>
-        <div style={{ fontSize: 12, color: '#cbd5e1', lineHeight: 1.45 }}>실계좌 연동 · 알림은 곧 추가됩니다.</div>
-      </div>
+      <MarketStatusCard />
     </aside>
   )
 }

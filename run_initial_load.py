@@ -6,7 +6,7 @@ Supabase 초기 데이터 적재 스크립트
 import sys
 import math
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, '.')
 
@@ -63,9 +63,11 @@ def main():
     df = df.reset_index()
 
     # 3. NaN 처리 후 레코드 변환
+    synced_at = datetime.now(timezone.utc).isoformat()
     records = []
     for _, row in df.iterrows():
         rec = clean_record(row.to_dict())
+        rec["synced_at"] = synced_at
         records.append(rec)
 
     print(f"총 {len(records)}개 레코드 Supabase upsert 시작...\n")

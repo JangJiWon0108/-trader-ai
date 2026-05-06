@@ -1,15 +1,17 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties } from 'react'
 import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
 import CalendarDateField from '../../components/CalendarDateField'
 import SortableTh from '../../components/SortableTh'
+import DataLoadStatusCard from '../../components/DataLoadStatusCard'
+import PaginationBar from '../../components/PaginationBar'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
 import { useTableSort } from '../../hooks/useTableSort'
-import { fetchEconomicHistory, type EconomicHistoryRow, type EconomicHistoryResponse } from '../../api'
+import { fetchEconomicHistory, fetchEconomicLatest, type EconomicHistoryRow, type EconomicHistoryResponse } from '../../api'
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = 30
 
 const emptyHistory = (): EconomicHistoryResponse => ({
   items: [],
@@ -76,7 +78,8 @@ function ymdLocal(d: Date) {
 function defaultDateRange() {
   const end = new Date()
   const start = new Date(end)
-  start.setDate(start.getDate() - 90)
+  // "3달" 기본값: 달 기준으로 3개월 전 (대략 90일이 아니라 캘린더 기준)
+  start.setMonth(start.getMonth() - 3)
   return { from: ymdLocal(start), to: ymdLocal(end) }
 }
 
@@ -220,6 +223,17 @@ export default function Economic() {
 
   const queryActive = Boolean(appliedFrom && appliedTo)
 
+  useEffect(() => {
+    // 초기 진입 시: 기본값(3달)로 바로 조회 실행
+    setAppliedFrom(defaults.from)
+    setAppliedTo(defaults.to)
+    setFilterHint(null)
+    setPage(1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const latest = useApi(fetchEconomicLatest)
+
   const { data, loading, error } = useApi(
     () => {
       if (!appliedFrom || !appliedTo) return Promise.resolve(emptyHistory())
@@ -258,27 +272,49 @@ export default function Economic() {
     </button>
   )
 
-  const subtitle = useMemo(() => {
-    if (!queryActive) {
-      return `선택: ${draftFrom} ~ ${draftTo} · 조회 시 필터 적용 · 페이지당 ${PAGE_SIZE}행`
-    }
-    const range = `${appliedFrom} ~ ${appliedTo}`
-    if (loading && data == null) return `${range} · 조회 중…`
-    if (loading && data) return `${range} · 총 ${total}일치 (갱신 중…)`
-    return `${range} · 총 ${total}일치 (날짜별 행) · 페이지당 ${PAGE_SIZE}행`
-  }, [queryActive, draftFrom, draftTo, appliedFrom, appliedTo, total, loading, data])
+  const todayKst = useMemo(() => {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
+    return `${get('year')}-${get('month')}-${get('day')}`
+  }, [])
+
+  const expectedDataDateKst = useMemo(() => {
+    // 스케줄이 "오늘" 돌면 "전일" 데이터가 적재되는 전제
+    const [y, m, d] = todayKst.split('-').map((v) => Number(v))
+    const baseUtc = Date.UTC(y, (m || 1) - 1, d || 1, 0, 0, 0, 0)
+    const prev = new Date(baseUtc - 86_400_000)
+    const yy = prev.getUTCFullYear()
+    const mm = String(prev.getUTCMonth() + 1).padStart(2, '0')
+    const dd = String(prev.getUTCDate()).padStart(2, '0')
+    return `${yy}-${mm}-${dd}`
+  }, [todayKst])
+
+  const latestDate = latest.data?.date ?? null
+  const hasExpectedData = Boolean(latestDate && latestDate >= expectedDataDateKst)
 
   return (
     <div style={{ padding: theme.pagePadding, fontFamily: theme.fontSans, minHeight: '100%' }}>
-      <PageHeader title="경제 지표" subtitle={subtitle} />
+      <PageHeader title="경제 지표" />
       {error && <div style={{ marginBottom: 16, color: theme.negative, fontSize: 14 }}>오류: {error}</div>}
       {filterHint && <div style={{ marginBottom: 12, color: theme.negative, fontSize: 13 }}>{filterHint}</div>}
+
+      <div style={{ marginBottom: 14 }}>
+        <div title={`스케줄이 오늘(KST) 실행되면 전일(${expectedDataDateKst}) 데이터가 적재되는 기준으로 판단합니다.`}>
+          <DataLoadStatusCard
+            expectedLabel={expectedDataDateKst}
+            latestLabel={latestDate}
+            loading={latest.loading}
+            ok={hasExpectedData}
+          />
+        </div>
+      </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end', marginBottom: theme.gutter }}>
         <div style={{ display: 'flex', gap: 8 }}>
           {tabBtn('econ', '경제 지표')}
           {tabBtn('stock', '주요 자산 가격')}
         </div>
+
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end', marginLeft: 'auto' }}>
           <CalendarDateField label="시작일" value={draftFrom} onChange={setDraftFrom} />
           <CalendarDateField label="종료일" value={draftTo} onChange={setDraftTo} />
@@ -314,21 +350,15 @@ export default function Economic() {
             <EconomicTable key={tab} rows={rows} loading={loading} error={error} colDefs={colDefs} awaitingQuery={awaitingQuery} />
 
             {queryActive && totalPages > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', justifyContent: 'center', marginTop: 18, paddingTop: 8 }}>
-                <button type="button" className="trader-btn" disabled={page <= 1 || loading} onClick={() => setPage((p) => Math.max(1, p - 1))} style={{
-                  padding: '8px 16px', borderRadius: 8, border: 'none', cursor: page <= 1 || loading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700,
-                  opacity: page <= 1 || loading ? 0.45 : 1,
-                  background: theme.surfaceContainer, color: theme.onSurface,
-                }}>이전</button>
-                <span style={{ fontSize: 13, color: theme.onSurfaceVariant, fontVariantNumeric: 'tabular-nums' }}>
-                  {page} / {totalPages} 페이지 · 페이지당 {PAGE_SIZE}일
-                </span>
-                <button type="button" className="trader-btn" disabled={page >= totalPages || loading} onClick={() => setPage((p) => Math.min(totalPages, p + 1))} style={{
-                  padding: '8px 16px', borderRadius: 8, border: 'none', cursor: page >= totalPages || loading ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 700,
-                  opacity: page >= totalPages || loading ? 0.45 : 1,
-                  background: theme.surfaceContainer, color: theme.onSurface,
-                }}>다음</button>
-              </div>
+              <PaginationBar
+                page={page}
+                totalPages={totalPages}
+                pageSize={PAGE_SIZE}
+                unitLabel="일"
+                loading={loading}
+                onPrev={() => setPage((p) => Math.max(1, p - 1))}
+                onNext={() => setPage((p) => Math.min(totalPages, p + 1))}
+              />
             )}
           </>
         )}

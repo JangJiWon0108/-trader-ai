@@ -1,19 +1,58 @@
 const BASE = '/api'
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`)
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-  return res.json()
+async function parseErrorMessage(res: Response) {
+  try {
+    const ct = res.headers.get('content-type') || ''
+    if (ct.includes('application/json')) {
+      const data = (await res.json()) as any
+      const detail = data?.detail
+      if (typeof detail === 'string' && detail.trim()) return detail.trim()
+      if (Array.isArray(detail) && detail.length) return JSON.stringify(detail)
+      if (typeof data?.message === 'string' && data.message.trim()) return data.message.trim()
+      return JSON.stringify(data)
+    }
+    const text = await res.text()
+    return text?.trim() || null
+  } catch {
+    return null
+  }
 }
 
-async function post<T>(path: string, body?: unknown): Promise<T> {
+function withTimeout(timeoutMs?: number) {
+  const controller = new AbortController()
+  const t = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null
+  return { controller, clear: () => (t ? clearTimeout(t) : undefined) }
+}
+
+async function get<T>(path: string, opts?: { timeoutMs?: number }): Promise<T> {
+  const to = withTimeout(opts?.timeoutMs)
+  const res = await fetch(`${BASE}${path}`, { signal: to.controller.signal })
+  if (!res.ok) {
+    const msg = await parseErrorMessage(res)
+    to.clear()
+    throw new Error(msg ? `${res.status} ${res.statusText} · ${msg}` : `${res.status} ${res.statusText}`)
+  }
+  const data = (await res.json()) as T
+  to.clear()
+  return data
+}
+
+async function post<T>(path: string, body?: unknown, opts?: { timeoutMs?: number }): Promise<T> {
+  const to = withTimeout(opts?.timeoutMs)
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: to.controller.signal,
   })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-  return res.json()
+  if (!res.ok) {
+    const msg = await parseErrorMessage(res)
+    to.clear()
+    throw new Error(msg ? `${res.status} ${res.statusText} · ${msg}` : `${res.status} ${res.statusText}`)
+  }
+  const data = (await res.json()) as T
+  to.clear()
+  return data
 }
 
 // ── Balance ────────────────────────────────────────────────────────
@@ -61,6 +100,12 @@ export async function fetchAllBalances(): Promise<KisOverseasBalance> {
     if (r.status === 'fulfilled' && r.value.rt_cd === '0') {
       allHoldings.push(...(r.value.output1 ?? []))
       if (r.value.output2) summary = r.value.output2
+      // 백엔드가 DB 기반으로 잔고를 돌려주는 경우(output2 비어있음),
+      // cashUsdBestEffort(holdings_summary.cash_usd)를 top-level로 내려준다.
+      // KIS raw output2 기반 추정치와 함께 "가장 큰 값"을 사용한다.
+      if (typeof r.value.cashUsdBestEffort === 'number' && Number.isFinite(r.value.cashUsdBestEffort)) {
+        cashUsdBestEffort = Math.max(cashUsdBestEffort, r.value.cashUsdBestEffort)
+      }
       const o2 = r.value.output2 as Record<string, string | undefined> | undefined
       if (o2) {
         for (const k of ['frcr_ord_psbl_amt1', 'ovrs_ord_psbl_amt', 'ord_psbl_frcr_amt'] as const) {
@@ -84,6 +129,7 @@ export async function fetchAllBalances(): Promise<KisOverseasBalance> {
 // ── Stocks / AI predictions ────────────────────────────────────────
 export interface StockPrediction {
   stock: string
+  accuracy?: number | null
   last_price: number | null
   predicted_price: number | null
   rise_probability: number | null
@@ -173,6 +219,34 @@ export interface OrderFillsResponse {
 export const fetchOrderFills = (days = 30) =>
   get<OrderFillsResponse>(`/balance/order-fills?days=${days}`)
 
+// ── Order history (buy/sell) ───────────────────────────────────────
+export interface OrderHistoryItem {
+  id: number
+  kst_at: string
+  ny_trading_date: string | null
+  side: 'buy' | 'sell' | string
+  ticker: string
+  stock_name: string | null
+  exchange_code: string | null
+  quantity: number | null
+  limit_price: number | null
+  order_type: string | null
+  rt_cd: string | null
+  api_message: string | null
+  success: boolean | null
+  source: string | null
+  payload: any | null
+}
+
+export interface OrderHistoryResponse {
+  rt_cd: string
+  items: OrderHistoryItem[]
+  count: number
+}
+
+export const fetchOrderHistory = () =>
+  get<OrderHistoryResponse>('/balance/order-history')
+
 export const fetchSchedulerStatus = () =>
   get<SchedulerStatus>('/stocks/recommendations/scheduler/status')
 
@@ -188,11 +262,39 @@ export const startSellScheduler = () =>
 export const stopSellScheduler = () =>
   post<{ message: string }>('/stocks/recommendations/sell/scheduler/stop')
 
+export const triggerAdminManualBuy = () =>
+  post<{ success: boolean; message: string }>('/admin/buy/trigger')
+
 export const triggerBuy = () =>
   post<{ message: string }>('/stocks/recommendations/purchase/trigger')
 
 export const triggerSell = () =>
   post<{ message: string }>('/stocks/recommendations/sell/trigger')
+
+// ── Alpha Vantage (Sentiment) ──────────────────────────────────────
+export interface SentimentStatus {
+  today_kst: string
+  latest_kst_date: string | null
+  latest_calculation_date: string | null
+  today_loaded: boolean
+}
+
+export const fetchSentimentStatus = () =>
+  get<SentimentStatus>('/stocks/recommendations/sentiment/status')
+
+export interface TriggerSentimentUpdateResponse {
+  message: string
+  skipped?: boolean
+  date_kst?: string
+  results?: unknown[]
+}
+
+export const triggerSentimentUpdate = () =>
+  post<TriggerSentimentUpdateResponse>(
+    '/stocks/recommendations/recommended-stocks/analyze-news-sentiment',
+    undefined,
+    { timeoutMs: 300_000 },
+  )
 
 // ── Economic ──────────────────────────────────────────────────────
 export interface EconomicLatest {
@@ -202,6 +304,193 @@ export interface EconomicLatest {
 
 export const fetchEconomicLatest = () =>
   get<EconomicLatest>('/economic/latest')
+
+export interface EconomicUpdateResponse {
+  success: boolean
+  message: string
+  total_records?: number
+  updated_records?: number
+}
+
+export const triggerEconomicUpdate = () =>
+  post<EconomicUpdateResponse>('/economic/update', undefined, { timeoutMs: 300_000 })
+
+// ── Admin (개인 운영) ───────────────────────────────────────────────
+export interface AdminHealth {
+  ok: boolean
+  project: { name: string; version: string; debug: boolean }
+  kis: { use_mock: boolean; base_url: string }
+  model: { predict_model_dir: string; resolved_path: string; exists: boolean }
+  schedules: unknown
+}
+
+export const fetchAdminHealth = () =>
+  get<AdminHealth>('/admin/health')
+
+export interface AdminPublicConfig {
+  project: { name: string; version: string; is_mock: boolean }
+  schedule: {
+    auto_buy_time_kst: string
+    auto_sell_interval_min: number
+    economic_update_time_kst: string
+    startup_run_auto_buy: boolean
+    after_economic_run_inference: boolean
+    eod_llm_report_enabled: boolean
+    eod_llm_report_time_kst: string
+  }
+  buy: {
+    model_accuracy_min: number
+    rise_prob_min: number
+    rsi_max: number
+    sentiment_min: number
+    tech_min_with_sentiment: number
+    tech_min_without_sentiment: number
+  }
+  sell: {
+    take_profit_pct: number
+    stop_loss_pct: number
+    rsi_overbought: number
+    sentiment_max: number
+    tech_min_with_sentiment: number
+    tech_min_tech_only: number
+    tech_min_without_sentiment: number
+  }
+  trading: {
+    buy_quantity: number
+    buy_amount_usd: number
+    max_positions: number
+    order_type: string
+  }
+}
+
+export const fetchAdminPublicConfig = () =>
+  get<AdminPublicConfig>('/admin/config/public')
+
+export interface AdminLogs {
+  file: string
+  lines: number
+  total_lines: number
+  text: string
+  source?: 'file' | 'memory' | 'none'
+}
+
+export const fetchAdminLogs = (opts?: { lines?: number; file?: string; source?: 'auto' | 'file' | 'memory' }) => {
+  const q = new URLSearchParams()
+  q.set('lines', String(opts?.lines ?? 250))
+  if (opts?.file) q.set('file', opts.file)
+  if (opts?.source) q.set('source', opts.source)
+  return get<AdminLogs>(`/admin/logs?${q.toString()}`)
+}
+
+export const sendAdminTelegramTest = (text?: string) =>
+  post<{ sent: boolean; text: string; error?: string | null }>('/admin/telegram/test', { text })
+
+export interface AdminModelInfo {
+  predict_model_dir: string
+  resolved_path: string
+  exists: boolean
+  model_meta: unknown
+}
+
+export const fetchAdminModelInfo = () =>
+  get<AdminModelInfo>('/admin/model')
+
+export interface AdminInferenceStatus {
+  today_kst: string
+  /** 경제 저장 종료일 가정: 오늘(KST)-1 */
+  expected_data_date_kst?: string
+  /** predicted_stocks.날짜 최신값 (실제 데이터 기준일) */
+  latest_data_date?: string | null
+  latest_created_at: string | null
+  latest_kst_date: string | null
+  inferred_today: boolean
+}
+
+export const fetchAdminInferenceStatus = () =>
+  get<AdminInferenceStatus>('/admin/inference/status')
+
+export const triggerAdminInference = () =>
+  post<{ success: boolean; result: unknown }>('/admin/inference/trigger', undefined, { timeoutMs: 300_000 })
+
+export const triggerAdminEconomicUpdate = () =>
+  post<{ success: boolean }>('/admin/economic/trigger')
+
+export const pingAdminKis = () =>
+  get<{ ok: boolean; rt_cd: string | null; msg1: string | null; use_mock: boolean }>('/admin/kis/ping')
+
+export interface AdminInferenceHistoryRow {
+  /** 경제/주가 데이터 기준일 (predicted_stocks 최신 날짜) */
+  data_date: string | null
+  /** 적재 시각(created_at)을 KST 날짜로만 표기 */
+  run_date_kst: string | null
+  created_at: string | null
+  stock: string | null
+  accuracy: number | null
+  rise_probability: number | null
+  recommendation: string | null
+  last_price: number | null
+  predicted_price: number | null
+}
+
+export interface AdminInferenceHistoryResponse {
+  items: AdminInferenceHistoryRow[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export function fetchAdminInferenceHistory(opts: {
+  dateFrom?: string
+  dateTo?: string
+  page?: number
+  pageSize?: number
+}) {
+  const q = new URLSearchParams()
+  if (opts.dateFrom) q.set('date_from', opts.dateFrom)
+  if (opts.dateTo) q.set('date_to', opts.dateTo)
+  q.set('page', String(opts.page ?? 1))
+  q.set('page_size', String(opts.pageSize ?? 30))
+  return get<AdminInferenceHistoryResponse>(`/admin/inference/history?${q.toString()}`)
+}
+
+export interface AdminSentimentRow {
+  ticker: string
+  average_sentiment_score: number | null
+  article_count: number | null
+  calculation_date: string | null
+}
+
+export const fetchAdminSentimentLatest = (limit = 120) =>
+  get<{ items: AdminSentimentRow[]; count: number }>(`/admin/sentiment/latest?limit=${limit}`)
+
+export interface AdminSentimentHistoryRow {
+  date: string | null
+  ticker: string
+  average_sentiment_score: number | null
+  article_count: number | null
+  calculation_date: string | null
+}
+
+export interface AdminSentimentHistoryResponse {
+  items: AdminSentimentHistoryRow[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export function fetchAdminSentimentHistory(opts: {
+  dateFrom?: string
+  dateTo?: string
+  page?: number
+  pageSize?: number
+}) {
+  const q = new URLSearchParams()
+  if (opts.dateFrom) q.set('date_from', opts.dateFrom)
+  if (opts.dateTo) q.set('date_to', opts.dateTo)
+  q.set('page', String(opts.page ?? 1))
+  q.set('page_size', String(opts.pageSize ?? 30))
+  return get<AdminSentimentHistoryResponse>(`/admin/sentiment/history?${q.toString()}`)
+}
 
 export interface EconomicHistoryRow {
   date: string | null
@@ -266,3 +555,6 @@ export async function fetchAllOrders(): Promise<NccsItem[]> {
   }
   return all
 }
+
+// ── Trading initialize (admin) ─────────────────────────────────────
+export const initializeMockTrading = () => post<unknown>('/balance/initialize')

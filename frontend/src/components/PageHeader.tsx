@@ -2,7 +2,15 @@ import { useApi } from '../hooks/useApi'
 import { fetchSchedulerStatus } from '../api'
 import { theme } from '../theme'
 
-export default function PageHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+export default function PageHeader({
+  title,
+  subtitle,
+  right,
+}: {
+  title: string
+  subtitle?: string
+  right?: React.ReactNode
+}) {
   const scheduler = useApi(fetchSchedulerStatus)
   const isMock = scheduler.data?.is_mock ?? true
   const pillLabel = isMock ? '모의 투자' : '실제 투자'
@@ -42,22 +50,25 @@ export default function PageHeader({ title, subtitle }: { title: string; subtitl
         />
         {pillLabel}
       </div>
-      <h1
-        style={{
-          margin: 0,
-          fontSize: 32,
-          fontWeight: 800,
-          letterSpacing: '-0.035em',
-          lineHeight: 1.15,
-          fontFamily: theme.fontDisplay,
-          background: `linear-gradient(105deg, ${theme.onSurface} 0%, ${theme.primaryBright} 55%, ${theme.accentCyan} 100%)`,
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          backgroundClip: 'text',
-        }}
-      >
-        {title}
-      </h1>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+        <h1
+          style={{
+            margin: 0,
+            fontSize: 32,
+            fontWeight: 800,
+            letterSpacing: '-0.035em',
+            lineHeight: 1.15,
+            fontFamily: theme.fontDisplay,
+            background: `linear-gradient(105deg, ${theme.onSurface} 0%, ${theme.primaryBright} 55%, ${theme.accentCyan} 100%)`,
+            WebkitBackgroundClip: 'text',
+            WebkitTextFillColor: 'transparent',
+            backgroundClip: 'text',
+          }}
+        >
+          {title}
+        </h1>
+        {right && <div style={{ marginLeft: 'auto', paddingTop: 2 }}>{right}</div>}
+      </div>
       {subtitle && (
         <p
           style={{

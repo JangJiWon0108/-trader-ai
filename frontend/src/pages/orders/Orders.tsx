@@ -1,136 +1,144 @@
-import type { CSSProperties } from 'react'
-import { useState } from 'react'
 import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
 import SortableTh from '../../components/SortableTh'
 import { useTableSort } from '../../hooks/useTableSort'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
-import { fetchOrders, type NccsItem } from '../../api'
+import { fetchOrderHistory, type OrderHistoryItem } from '../../api'
+import { tdBase, thColHead, tableScrollBox, monoFont } from '../../components/gridTableStyles'
 
-
-const th: CSSProperties = {
-  padding: '12px 10px',
-  fontSize: 11,
-  fontWeight: 600,
-  color: theme.onSurfaceVariant,
-  textAlign: 'left',
-  borderBottom: `1px solid ${theme.outline}`,
-  whiteSpace: 'nowrap',
-}
-const td: CSSProperties = {
-  padding: '12px 10px',
-  fontSize: 13,
-  borderBottom: `1px solid ${theme.surfaceContainer}`,
-  color: theme.onSurface,
-  fontVariantNumeric: 'tabular-nums',
-}
-
-type Row = NccsItem & { _side: string; _price: number; _qty: number; _filled: number }
-
-function buildRows(items: NccsItem[]): Row[] {
-  return items.map((item) => ({
-    ...item,
-    _side: item.sll_buy_dvsn_cd_name ?? '',
-    _price: parseFloat(item.ft_ord_unpr3 ?? '0') || 0,
-    _qty: parseFloat(item.ft_ord_qty ?? '0') || 0,
-    _filled: parseFloat(item.ft_ccld_qty ?? '0') || 0,
-  }))
+function formatKst(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
 }
 
-const accessors: Record<string, (r: Row) => string | number> = {
-  odno: (r) => r.odno ?? '',
-  ord_dt: (r) => r.ord_dt ?? '',
-  ovrs_pdno: (r) => r.ovrs_pdno ?? '',
-  ovrs_item_name: (r) => r.ovrs_item_name ?? '',
-  _side: (r) => r._side,
-  _qty: (r) => r._qty,
-  _price: (r) => r._price,
-  _filled: (r) => r._filled,
-  ord_stat_name: (r) => r.ord_stat_name ?? '',
+type HistoryRow = OrderHistoryItem & {
+  _reason: string
+  _accuracy: number | null
+  _riseProb: number | null
+}
+
+function buildHistoryRows(items: OrderHistoryItem[]): HistoryRow[] {
+  return (items ?? []).map((it) => {
+    const payload: any = it.payload ?? null
+    const meta = payload?.meta ?? null
+    const sellReasons = payload?.sell_reasons
+    const reason = payload?.reason
+    const reasonText =
+      Array.isArray(sellReasons) && sellReasons.length ? sellReasons.join('; ')
+        : typeof reason === 'string' && reason.trim() ? reason.trim()
+          : '—'
+    const accuracy = meta?.accuracy != null ? Number(meta.accuracy) : null
+    const riseProb = meta?.rise_probability != null ? Number(meta.rise_probability) : null
+    return {
+      ...it,
+      _reason: reasonText,
+      _accuracy: accuracy != null && !Number.isNaN(accuracy) ? accuracy : null,
+      _riseProb: riseProb != null && !Number.isNaN(riseProb) ? riseProb : null,
+    }
+  })
+}
+
+const hAccessors: Record<string, (r: HistoryRow) => string | number> = {
+  kst_at: (r) => r.kst_at ?? '',
+  side: (r) => r.side ?? '',
+  ticker: (r) => r.ticker ?? '',
+  stock_name: (r) => r.stock_name ?? '',
+  quantity: (r) => r.quantity ?? 0,
+  limit_price: (r) => r.limit_price ?? 0,
+  _accuracy: (r) => r._accuracy ?? 0,
+  _riseProb: (r) => r._riseProb ?? 0,
+  _reason: (r) => r._reason ?? '',
+  success: (r) => (r.success ? 1 : 0),
 }
 
 export default function Orders() {
-  const [exchange, setExchange] = useState('NASD')
-  const { data: nData, loading, error } = useApi(() => fetchOrders(exchange), [exchange])
-  const rows = buildRows(nData?.output ?? [])
-  const { sortedRows, sortKey, sortDir, requestSort } = useTableSort(rows, accessors)
+  const history = useApi(fetchOrderHistory)
 
-  const excBtnStyle = (ex: string): CSSProperties => ({
-    padding: '6px 14px',
-    borderRadius: theme.radiusMd,
-    fontSize: 12,
-    fontWeight: 700,
-    cursor: 'pointer',
-    border: 'none',
-    background: exchange === ex ? theme.primary : theme.surfaceContainer,
-    color: exchange === ex ? '#fff' : theme.onSurfaceVariant,
-  })
+  const hRows = buildHistoryRows(history.data?.items ?? [])
+
+  const { sortedRows: sortedHist, sortKey: hk, sortDir: hd, requestSort: hr } = useTableSort(
+    hRows,
+    hAccessors,
+    { key: 'kst_at', dir: 'desc' },
+  )
 
   return (
     <div style={{ padding: theme.pagePadding, fontFamily: theme.fontSans, minHeight: '100%' }}>
-      <PageHeader title="주문 내역" subtitle="체결·미체결 내역 · 최근 7일" />
+      <PageHeader title="주문 내역" subtitle="매수·매도 히스토리" />
 
       <div style={{ display: 'flex', gap: 8, marginBottom: theme.gutter, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 13, color: theme.onSurfaceVariant }}>거래소:</span>
-        {['NASD', 'NYSE', 'AMEX'].map((ex) => (
-          <button key={ex} className="trader-btn" style={excBtnStyle(ex)} onClick={() => setExchange(ex)}>{ex}</button>
-        ))}
         <span style={{ marginLeft: 'auto', fontSize: 12, color: theme.onSurfaceVariant }}>
-          {loading ? '로딩 중…' : `${rows.length}건`}
+          {history.loading ? '로딩 중…' : `${hRows.length}건`}
         </span>
       </div>
 
-      <Card title="주문 히스토리">
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+      <Card title="매수·매도 히스토리">
+        <div style={tableScrollBox}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1100 }}>
             <thead>
               <tr>
                 {[
-                  { id: 'odno', label: '주문번호', tip: '한국투자증권 발급 주문 고유번호' },
-                  { id: 'ord_dt', label: '일자', tip: '주문 접수 날짜 (YYYYMMDD)' },
-                  { id: 'ovrs_pdno', label: '티커' },
-                  { id: 'ovrs_item_name', label: '종목명' },
-                  { id: '_side', label: '구분', tip: '매수(BUY) 또는 매도(SELL)' },
-                  { id: '_qty', label: '주문수량', right: true, tip: '주문한 총 주식 수 (주)' },
-                  { id: '_price', label: '주문가', right: true, tip: '지정한 주문 단가 (USD)' },
-                  { id: '_filled', label: '체결수량', right: true, tip: '실제로 체결(거래 완료)된 주식 수' },
-                  { id: 'ord_stat_name', label: '상태', tip: '주문 처리 상태 (체결·미체결·취소 등)' },
+                  { id: 'kst_at', label: '일시(KST)', tip: '주문 실행 시각(한국시간)' },
+                  { id: 'side', label: '구분', tip: '매수/매도' },
+                  { id: 'ticker', label: '티커' },
+                  { id: 'stock_name', label: '종목명' },
+                  { id: 'quantity', label: '수량', right: true },
+                  { id: 'limit_price', label: '주문가', right: true },
+                  { id: '_accuracy', label: '정확도', right: true, tip: '모델 백테스트 예측 정확도 (%)' },
+                  { id: '_riseProb', label: '상승확률', right: true, tip: 'AI 모델 예측 상승 확률 (%)' },
+                  { id: '_reason', label: '사유', tip: '매수/매도 근거 요약' },
+                  { id: 'success', label: '성공', tip: '주문 접수 성공 여부' },
                 ].map(({ id, label, right, tip }) => (
-                  <SortableTh key={id} colId={id} label={label} align={right ? 'right' : 'left'}
-                    sortKey={sortKey} sortDir={sortDir} onSort={requestSort}
-                    style={{ ...th, textAlign: right ? 'right' : 'left' }} tip={tip} />
+                  <SortableTh
+                    key={id}
+                    colId={id}
+                    label={label}
+                    align={right ? 'right' : 'left'}
+                    sortKey={hk}
+                    sortDir={hd}
+                    onSort={hr}
+                    style={{ ...thColHead, textAlign: right ? 'right' : 'left' }}
+                    tip={tip}
+                  />
                 ))}
               </tr>
             </thead>
             <tbody>
-              {loading && (
-                <tr><td colSpan={9} style={{ ...td, textAlign: 'center', color: theme.onSurfaceVariant }}>주문 내역 조회 중…</td></tr>
+              {history.loading && (
+                <tr><td colSpan={10} style={{ ...tdBase, textAlign: 'center', color: theme.onSurfaceVariant }}>주문 히스토리 조회 중…</td></tr>
               )}
-              {error && (
-                <tr><td colSpan={9} style={{ ...td, color: theme.negative }}>
-                  조회 실패: {error}
-                  {error.includes('지원') || error.includes('400') ? ' (모의투자 환경에서는 미체결 API가 제한될 수 있습니다)' : ''}
-                </td></tr>
+              {history.error && (
+                <tr><td colSpan={10} style={{ ...tdBase, color: theme.negative }}>조회 실패: {history.error}</td></tr>
               )}
-              {!loading && !error && rows.length === 0 && (
-                <tr><td colSpan={9} style={{ ...td, textAlign: 'center', color: theme.onSurfaceVariant }}>주문 내역 없음</td></tr>
+              {!history.loading && !history.error && hRows.length === 0 && (
+                <tr><td colSpan={10} style={{ ...tdBase, textAlign: 'center', color: theme.onSurfaceVariant }}>주문 내역 없음</td></tr>
               )}
-              {sortedRows.map((o, i) => {
-                const isBuy = o._side.includes('매수') || o._side.toUpperCase().includes('BUY')
+              {sortedHist.map((o) => {
+                const isBuy = String(o.side).toLowerCase().includes('buy') || String(o.side).includes('매수')
                 return (
-                  <tr key={o.odno ?? i}>
-                    <td style={{ ...td, fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{o.odno ?? '—'}</td>
-                    <td style={{ ...td, color: theme.onSurfaceVariant, whiteSpace: 'nowrap' }}>{o.ord_dt ?? '—'}</td>
-                    <td style={{ ...td, fontWeight: 600 }}>{o.ovrs_pdno ?? '—'}</td>
-                    <td style={{ ...td, fontSize: 12 }}>{o.ovrs_item_name ?? '—'}</td>
-                    <td style={{ ...td, fontWeight: 700, color: isBuy ? theme.positive : theme.negative }}>
-                      {o._side || '—'}
-                    </td>
-                    <td style={{ ...td, textAlign: 'right' }}>{o._qty || '—'}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{o._price ? `$${o._price.toFixed(2)}` : '—'}</td>
-                    <td style={{ ...td, textAlign: 'right' }}>{o._filled || '0'}</td>
-                    <td style={{ ...td, fontSize: 12 }}>{o.ord_stat_name ?? '—'}</td>
+                  <tr key={o.id}>
+                    <td style={{ ...tdBase, fontFamily: monoFont, fontSize: 11 }}>{formatKst(o.kst_at)}</td>
+                    <td style={{ ...tdBase, fontWeight: 900, color: isBuy ? theme.positive : theme.negative }}>{o.side ?? '—'}</td>
+                    <td style={{ ...tdBase, fontWeight: 800 }}>{o.ticker ?? '—'}</td>
+                    <td style={{ ...tdBase, fontSize: 12 }}>{o.stock_name ?? '—'}</td>
+                    <td style={{ ...tdBase, textAlign: 'right' }}>{o.quantity ?? '—'}</td>
+                    <td style={{ ...tdBase, textAlign: 'right' }}>{o.limit_price != null ? `$${Number(o.limit_price).toFixed(2)}` : '—'}</td>
+                    <td style={{ ...tdBase, textAlign: 'right' }}>{o._accuracy != null ? `${o._accuracy.toFixed(1)}%` : '—'}</td>
+                    <td style={{ ...tdBase, textAlign: 'right' }}>{o._riseProb != null ? `${o._riseProb.toFixed(1)}%` : '—'}</td>
+                    <td style={{ ...tdBase, fontSize: 12, color: theme.onSurfaceVariant, maxWidth: 360, whiteSpace: 'normal' }}>{o._reason}</td>
+                    <td style={{ ...tdBase, fontSize: 12 }}>{o.success == null ? '—' : (o.success ? 'Y' : 'N')}</td>
                   </tr>
                 )
               })}

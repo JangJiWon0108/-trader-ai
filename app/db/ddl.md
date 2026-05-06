@@ -259,64 +259,7 @@ CREATE TABLE public.economic_and_stock_data (
 ) TABLESPACE pg_default;
 
 
--- 2. 일별 거래량 (wide-format, 날짜별 1행)
-create table public.stock_daily_volume (
-  날짜 date not null,
-  "엔비디아" bigint null,
-  "구글 A" bigint null,
-  "애플" bigint null,
-  "마이크로소프트" bigint null,
-  "아마존" bigint null,
-  "브로드컴" bigint null,
-  "메타" bigint null,
-  "테슬라" bigint null,
-  "월마트" bigint null,
-  "마이크론" bigint null,
-  "AMD" bigint null,
-  "ASML" bigint null,
-  "인텔" bigint null,
-  "코스트코" bigint null,
-  "넷플릭스" bigint null,
-  "시스코" bigint null,
-  "팔란티어" bigint null,
-  "램리서치" bigint null,
-  "어플라이드 머티리얼즈" bigint null,
-  "텍사스 인스트루먼트" bigint null,
-  "린드" bigint null,
-  "KLA Corp" bigint null,
-  "Arm" bigint null,
-  "펩시코" bigint null,
-  "티모바일" bigint null,
-  "아나로그디바이스" bigint null,
-  "샌디스크" bigint null,
-  "퀄컴" bigint null,
-  "암젠" bigint null,
-  "쇼피파이" bigint null,
-  "씨게이트" bigint null,
-  "인튜이티브 서지컬" bigint null,
-  "앱러빈" bigint null,
-  "팔로알토 네트웍스" bigint null,
-  "마벨 테크놀로지" bigint null,
-  "허니웰 인터내셔널" bigint null,
-  "부킹홀딩스" bigint null,
-  "스타벅스" bigint null,
-  "콘스텔레이션 에너지" bigint null,
-  "인튜이트" bigint null,
-  "버텍스 파마슈티컬스" bigint null,
-  "어도비" bigint null,
-  "컴캐스트" bigint null,
-  "케이던스" bigint null,
-  "시놉시스" bigint null,
-  "메리어트" bigint null,
-  "메르카도리브레" bigint null,
-  "ADP" bigint null,
-  "에어비앤비" bigint null,
-  "몬델리즈" bigint null,
-  constraint stock_daily_volume_pkey primary key ("날짜")
-) TABLESPACE pg_default;
-
-
--- 3. 모델 추론 결과 (wide-format, 날짜별 1행, 종목별 예측/실제값)
+-- 2. 모델 추론 결과 (wide-format, 날짜별 1행, 종목별 예측/실제값)
 create table public.predicted_stocks (
   id serial not null,
   날짜 date not null,

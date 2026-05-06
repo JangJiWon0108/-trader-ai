@@ -47,6 +47,7 @@ def send_telegram_message(
         return False
 
     url = f"https://api.telegram.org/bot{tok}/sendMessage"
+    safe_url = "https://api.telegram.org/bot***/sendMessage"
     payload: dict = {
         "chat_id": cid,
         "text": text,
@@ -56,7 +57,8 @@ def send_telegram_message(
         payload["parse_mode"] = parse_mode
 
     try:
-        r = requests.post(url, json=payload, timeout=timeout_sec)
+        # (connect timeout, read timeout)
+        r = requests.post(url, json=payload, timeout=(timeout_sec, max(20.0, timeout_sec)))
         r.raise_for_status()
         data = r.json()
         if not data.get("ok"):
@@ -64,7 +66,9 @@ def send_telegram_message(
             return False
         return True
     except requests.RequestException as e:
-        logger.error("Telegram 전송 실패: %s", e)
+        # 예외 문자열에 bot token 이 포함될 수 있어 마스킹
+        msg = str(e).replace(url, safe_url).replace(tok, "***")
+        logger.error("Telegram 전송 실패: %s", msg)
         return False
 
 
@@ -95,3 +99,50 @@ def send_telegram_long_text(
         if not send_telegram_message(prefix + chunk, **kwargs):
             ok_all = False
     return ok_all
+
+
+def send_telegram_message_detailed(
+    text: str,
+    *,
+    parse_mode: ParseMode = None,
+    disable_notification: bool = False,
+    token: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    timeout_sec: float = 10.0,
+) -> dict:
+    """
+    관리자/디버깅 용도: 전송 성공 여부 + 실패 사유를 dict로 반환.
+    기존 send_telegram_message/send_telegram_long_text는 그대로 유지(호환성).
+    """
+    if not (text or "").strip():
+        return {"sent": False, "error": "빈 메시지는 보낼 수 없습니다."}
+
+    tok = (token or "").strip()
+    cid = (chat_id or "").strip()
+    if not tok or not cid:
+        from app.core.config import settings
+
+        tok = (tok or (settings.TELEGRAM_BOT_TOKEN or "")).strip()
+        cid = (cid or (settings.TELEGRAM_CHAT_ID or "")).strip()
+
+    if not tok or not cid:
+        return {"sent": False, "error": "TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID가 비어 있습니다."}
+
+    url = f"https://api.telegram.org/bot{tok}/sendMessage"
+    safe_url = "https://api.telegram.org/bot***/sendMessage"
+    payload: dict = {"chat_id": cid, "text": text, "disable_notification": disable_notification}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+
+    try:
+        r = requests.post(url, json=payload, timeout=(timeout_sec, max(20.0, timeout_sec)))
+        # 텔레그램은 200이어도 ok=false가 올 수 있음
+        data = r.json() if r.text else {}
+        if not r.ok:
+            return {"sent": False, "error": f"HTTP {r.status_code}: {data or r.text}"}
+        if not isinstance(data, dict) or not data.get("ok"):
+            return {"sent": False, "error": f"Telegram API ok=false: {data}"}
+        return {"sent": True, "error": None}
+    except requests.RequestException as e:
+        msg = str(e).replace(url, safe_url).replace(tok, "***")
+        return {"sent": False, "error": f"요청 실패: {msg}"}

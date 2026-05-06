@@ -6,16 +6,19 @@
 
 # ─── 모듈 임포트 ───
 from typing import Optional
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
+import pytz
 
 from app.core.config import settings
+from app.utils.logger import get_logger
 from app.services.balance_service import (
-    get_domestic_balance, 
-    get_overseas_balance,  
-    overseas_order_resv, 
-    inquire_psamount, 
+    get_domestic_balance,
+    get_overseas_balance,
+    overseas_order_resv,
+    inquire_psamount,
     get_current_price,
     get_overseas_nccs,
     get_overseas_order_detail,
@@ -23,8 +26,18 @@ from app.services.balance_service import (
     get_merged_overseas_filled_orders,
     order_overseas_stock,
     create_conditional_orders,
+    reset_mock_investment,
+    get_holdings_from_db,
+    get_order_fills_from_db,
+    get_order_history_from_db,
+    sync_holdings_to_db,
+    sync_order_fills_to_db,
+    get_open_orders_from_db,
+    sync_open_orders_to_db,
+    reset_trading_state_in_db,
 )
 
+logger = get_logger(__name__)
 router = APIRouter()
 
 # ─── 엔드포인트 핸들러 ───
@@ -38,18 +51,11 @@ def read_balance():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"잔고 조회 중 오류 발생: {str(e)}")
 
-@router.get("/overseas", summary="해외주식 잔고 조회")
-def read_balance_overseas():
-    """
-    해외주식 잔고 조회 API
-
-    ### 응답
-    - 성공 시: 해외주식 잔고 정보 반환
-    - 실패 시: 오류 메시지와 함께 HTTP 상태 코드 반환
-    """
+@router.get("/overseas", summary="해외주식 잔고 조회 (DB)")
+def read_balance_overseas(ovrs_excg_cd: str = Query(default="NASD")):
+    """Supabase holdings 테이블에서 잔고 반환 (거래소 파라미터 무시, 전체 반환)."""
     try:
-        result = get_overseas_balance()  # 해외주식 잔고 조회
-        return result
+        return get_holdings_from_db()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"잔고 조회 중 오류 발생: {str(e)}")
 
@@ -178,14 +184,24 @@ def get_current_price_route(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"현재체결가 조회 중 오류 발생: {str(e)}")
 
-@router.get("/order-fills", summary="해외주식 최근 체결(또는 체결분) 주문 내역")
+@router.get("/order-fills", summary="해외주식 최근 체결 내역 (DB)")
 def read_order_fills(days: int = Query(30, ge=1, le=365, description="조회 기간(일)")):
-    """VTTS3035R/TTTS3035R 기반. 모의투자는 CCLD=00 후 서버에서 ft_ccld_qty>0 만 반환."""
+    """Supabase order_fills 테이블에서 체결 내역 반환."""
     try:
-        rows = get_merged_overseas_filled_orders(days=days)
+        rows = get_order_fills_from_db(days=days)
         return {"rt_cd": "0", "output": rows, "count": len(rows)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"체결 내역 조회 중 오류 발생: {str(e)}")
+
+
+@router.get("/order-history", summary="매수/매도 주문 이력 (DB)")
+def read_order_history():
+    """Supabase order_history 테이블에서 주문 이력 반환."""
+    try:
+        rows = get_order_history_from_db()
+        return {"rt_cd": "0", "items": rows, "count": len(rows)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"주문 이력 조회 중 오류 발생: {str(e)}")
 
 
 @router.get("/nccs", summary="해외주식 미체결내역 조회 (모의투자 환경에서는 지원되지 않습니다.)")
@@ -197,41 +213,9 @@ def get_overseas_nccs_route(
     해외주식 미체결내역 조회 API
     """
     try:
-        # 기본 파라미터 설정
-        base_params = {
-            "CANO": settings.KIS_CANO,
-            "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
-            "OVRS_EXCG_CD": ovrs_excg_cd,
-            "SORT_SQN": sort_sqn,
-        }
-        
-        if settings.KIS_USE_MOCK:
-            # 모의투자: 현재 날짜 기준으로 지난 7일 데이터만 조회
-            from datetime import datetime, timedelta
-            today = datetime.now()
-            # 일주일 전으로 설정 (더 짧은 기간으로 테스트)
-            seven_days_ago = today - timedelta(days=7)
-            
-            params = {
-                **base_params,
-                "CTX_AREA_FK100": "",
-                "CTX_AREA_NK100": "",
-                "INQR_ST_DT": seven_days_ago.strftime("%Y%m%d"),
-                "INQR_END_DT": today.strftime("%Y%m%d"),
-            }
-            result = get_overseas_order_detail(params, only_unfilled_pending=True)
-        else:
-            # 실전투자: 미체결내역 API 사용
-            params = {
-                **base_params,
-                "CTX_AREA_FK200": "",
-                "CTX_AREA_NK200": "",
-            }
-            result = get_overseas_nccs(params)
-        
-        if result.get("rt_cd") != "0" and result.get("rt_cd") != "1":
-            raise HTTPException(status_code=400, detail=result.get("msg1", "조회 실패"))
-        return result
+        # 프론트에 보이는 값은 항상 DB 기반: exchange/sort 파라미터는 호환용으로만 받음
+        rows = get_open_orders_from_db()
+        return {"rt_cd": "0", "output": rows, "count": len(rows)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"미체결내역 조회 중 오류 발생: {str(e)}")
 
@@ -344,6 +328,33 @@ def order_overseas_stock_route(request: OrderOverseasRequest):
         # 서비스 함수 호출
         result = order_overseas_stock(order_data)
         
+        # 주문 이력 저장(성공/실패 무관하게 남겨야 대시보드/관리자가 상태를 파악 가능)
+        try:
+            from datetime import datetime
+            import pytz
+            from app.services.daily_log_service import save_order
+
+            now_ny = datetime.now(pytz.timezone("America/New_York"))
+            side = "buy" if bool(request.is_buy) else "sell"
+            msg1 = result.get("msg1", "") if isinstance(result, dict) else ""
+            save_order(
+                side=side,
+                ticker=request.pdno,
+                stock_name=None,
+                exchange_code=request.ovrs_excg_cd,
+                quantity=int(float(request.ord_qty)) if request.ord_qty else None,
+                limit_price=float(request.ovrs_ord_unpr) if request.ovrs_ord_unpr else None,
+                order_type=str(request.ord_dvsn or ""),
+                rt_cd=str(result.get("rt_cd")) if isinstance(result, dict) else None,
+                api_message=msg1,
+                success=bool(isinstance(result, dict) and result.get("rt_cd") == "0"),
+                source="manual_api",
+                payload={"order_request": order_data, "order_result": result},
+                ny_trading_date=now_ny.strftime("%Y-%m-%d"),
+            )
+        except Exception:
+            logger.warning("order_history 저장 실패(무시)", exc_info=True)
+
         # 결과 확인
         if result.get("rt_cd") != "0":
             error_msg = result.get("msg1", "주문 처리 중 오류가 발생했습니다")
@@ -355,6 +366,205 @@ def order_overseas_stock_route(request: OrderOverseasRequest):
     except Exception as e:
         print(f"해외주식 주문 처리 중 오류 발생: {str(e)}")
         raise HTTPException(status_code=500, detail=f"주문 처리 중 오류가 발생했습니다: {str(e)}")
+
+@router.post("/sync", summary="KIS → DB 즉시 동기화")
+def sync_from_kis():
+    """잔고 및 체결 내역을 KIS에서 조회해 Supabase에 즉시 저장합니다."""
+    holdings_ok = sync_holdings_to_db()
+    fills_ok = sync_order_fills_to_db()
+    open_ok = sync_open_orders_to_db()
+    return {"holdings": holdings_ok, "order_fills": fills_ok, "open_orders": open_ok}
+
+
+@router.post("/reset", summary="모의투자 리셋 (전체 보유 종목 전량 매도)")
+def reset_mock_investment_route():
+    """
+    모의투자 리셋 API
+
+    전체 보유 종목을 현재가 기준으로 전량 매도합니다.
+    리셋 후 스케줄러는 그대로 유지되며, 다음 장 오픈 시 정상 매수/매도가 재개됩니다.
+
+    ### 응답
+    - **sold**: 매도 성공한 종목 리스트 (ticker, quantity, price, exchange_code)
+    - **failed**: 매도 실패한 종목 리스트 (ticker, error)
+    - **skipped**: 수량 0 등으로 건너뛴 종목 리스트
+    - **success**: 전체 성공 여부
+
+    ※ 모의투자 환경에서만 사용하는 것을 권장합니다.
+    """
+    try:
+        result = reset_mock_investment()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"리셋 중 오류 발생: {str(e)}")
+
+
+@router.post("/initialize", summary="모의투자 초기화(거래 상태 초기화 + 시작 자금 세팅)")
+def initialize_mock_trading():
+    """
+    '처음부터 다시 시작' 용도.
+    - KIS 전량 매도(가능하면) 시도
+    - Supabase 거래 상태 테이블(holdings/order_fills/open_orders 등) 초기화
+    - 시작 자금(기본 5억 원)을 holdings_summary에 시드(best-effort USD로 환산)
+
+    경제/추론/감성 데이터는 유지한다.
+    """
+    try:
+        # 초기화 중 매도 스케줄러가 동시에 DB를 갱신/주문하지 않도록 일시 중지 후 재시작한다.
+        scheduler_before = None
+        scheduler_stop = {"attempted": False, "stopped": None, "error": None}
+        scheduler_start = {"attempted": False, "started": None, "error": None}
+        try:
+            from app.utils.scheduler import get_scheduler_status, start_sell_scheduler, stop_sell_scheduler
+
+            scheduler_before = get_scheduler_status()
+            scheduler_stop["attempted"] = True
+            # stop_sell_scheduler(): 실행 중이면 True, 이미 중지면 False
+            scheduler_stop["stopped"] = bool(stop_sell_scheduler())
+        except Exception as se:
+            scheduler_stop["attempted"] = True
+            scheduler_stop["stopped"] = False
+            scheduler_stop["error"] = str(se)
+            logger.warning("초기화 전 매도 스케줄러 중지 실패(계속 진행): %s", se)
+
+        # 장외에는 KIS 호출이 제한/실패할 수 있어, 장중일 때만 전량매도 reset을 시도한다.
+        # 중요: 장중 판정은 스케줄러와 반드시 동일해야 한다(프론트/텔레그램/스케줄과 불일치 방지).
+        ny = pytz.timezone("America/New_York")
+        now_ny = datetime.now(ny)
+        from app.utils.scheduler import StockScheduler
+
+        is_market_hours, open_dt, close_dt = StockScheduler._calc_market_window(now_ny)
+        is_weekday = 0 <= now_ny.weekday() <= 4
+
+        kis_reset = {"attempted": False, "market_hours": is_market_hours, "success": None}
+        if is_market_hours:
+            kis_reset["attempted"] = True
+            try:
+                # reset_mock_investment()는 {success, sold, failed, skipped ...}만 반환한다.
+                # initialize 응답에서 '실행 여부/장중 여부'를 안정적으로 표시하기 위해 메타 필드를 보강한다.
+                _r = reset_mock_investment()
+                kis_reset = {
+                    "attempted": True,
+                    "market_hours": True,
+                    **(_r if isinstance(_r, dict) else {"success": False, "error": "KIS reset 반환 형식이 올바르지 않습니다."}),
+                }
+                # 프론트/텔레그램/로그 편의용: 카운트 필드가 없거나 None이면 보강
+                try:
+                    kis_reset.setdefault("sold_count", len(kis_reset.get("sold") or []))
+                    kis_reset.setdefault("failed_count", len(kis_reset.get("failed") or []))
+                    kis_reset.setdefault("skipped_count", len(kis_reset.get("skipped") or []))
+                    if kis_reset.get("remaining_count") is None:
+                        kis_reset["remaining_count"] = len(kis_reset.get("remaining_holdings") or [])
+                except Exception:
+                    pass
+            except Exception as e:
+                kis_reset = {"attempted": True, "market_hours": True, "success": False, "error": f"KIS reset 실패: {str(e)}"}
+
+            # 장중 초기화의 핵심 보장:
+            # - "DB를 지웠는데도 보유가 다시 나타남"의 근본 원인은 KIS 잔고가 실제로 0이 아니기 때문.
+            # - 따라서 장중에는 KIS 잔고가 0으로 정착(settled=True)된 경우에만 DB 초기화를 진행한다.
+            if kis_reset.get("settled") is not True:
+                # 409: 현재 상태(conflict)에서 의도한 초기화 목표를 만족할 수 없음
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "장중 초기화 실패: KIS 잔고가 0으로 정착되지 않았습니다. (보유 종목이 남아있어 초기화를 완료할 수 없음)",
+                        "kis_reset": kis_reset,
+                    },
+                )
+        else:
+            kis_reset.update(
+                {
+                    "attempted": False,
+                    "market_hours": False,
+                    "success": True,
+                    "skipped": True,
+                    "reason": "장외(미국 정규장 외)에는 KIS 주문/현재가 호출이 실패할 수 있어 reset을 스킵했습니다.",
+                    "now_ny": now_ny.isoformat(),
+                    "open_ny": open_dt.isoformat(),
+                    "close_ny": close_dt.isoformat(),
+                    "is_weekday": is_weekday,
+                }
+            )
+
+        # KIS 잔고가 0으로 확정된 뒤에만 DB 거래 상태를 지운다(장중).
+        # 장외에는 KIS reset을 스킵하므로 DB만 초기화하는 모드로 동작한다.
+        db_reset = reset_trading_state_in_db(
+            initial_cash_krw=int(settings.MOCK_INITIAL_CASH_KRW),
+            wipe_trade_logs=True,
+        )
+        result = {
+            "ok": bool(db_reset.get("ok") and (kis_reset.get("success") is not False)),
+            "db_ok": bool(db_reset.get("ok")),
+            "kis_attempted": bool(kis_reset.get("attempted")),
+            "kis_skipped": bool(kis_reset.get("skipped")),
+            "kis_success": kis_reset.get("success"),
+            "kis_market_hours": kis_reset.get("market_hours"),
+            "kis_reset": kis_reset,
+            "db_reset": db_reset,
+            "scheduler_before": scheduler_before,
+            "scheduler_stop": scheduler_stop,
+            "scheduler_start": scheduler_start,
+        }
+
+        # 초기화 직후 KIS→DB 재동기화:
+        # - 장중: KIS 잔고 0 정착을 선행 보장했으므로, 동기화는 "보유 0"을 DB에 확정하기 위한 절차.
+        # - 장외: DB 초기화만 수행하므로 동기화는 시도하지 않는다(KIS 호출 실패 가능).
+        post_sync = {"attempted": False, "holdings": None, "order_fills": None, "open_orders": None, "error": None}
+        try:
+            if bool(kis_reset.get("attempted")) and bool(kis_reset.get("market_hours")):
+                post_sync["attempted"] = True
+                from app.services.balance_service import (
+                    sync_holdings_to_db,
+                    sync_order_fills_to_db,
+                    sync_open_orders_to_db,
+                )
+
+                post_sync["holdings"] = bool(sync_holdings_to_db())
+                post_sync["order_fills"] = bool(sync_order_fills_to_db())
+                post_sync["open_orders"] = bool(sync_open_orders_to_db())
+        except Exception as pse:
+            post_sync["attempted"] = True
+            post_sync["error"] = str(pse)
+            logger.warning("초기화 직후 KIS→DB 재동기화 실패(무시): %s", pse)
+        result["post_sync"] = post_sync
+
+        # 초기화 후 매도 스케줄러 재시작(항상 start 시도)
+        try:
+            from app.utils.scheduler import start_sell_scheduler, stop_sell_scheduler
+
+            scheduler_start["attempted"] = True
+            started = start_sell_scheduler()
+            # 이미 running 이면 False → stop 후 한 번 더 start 해서 강제 재시작 시도
+            if not started:
+                try:
+                    stop_sell_scheduler()
+                except Exception:
+                    pass
+                started = start_sell_scheduler()
+            scheduler_start["started"] = bool(started)
+        except Exception as se2:
+            scheduler_start["attempted"] = True
+            scheduler_start["started"] = False
+            scheduler_start["error"] = str(se2)
+            logger.warning("초기화 후 매도 스케줄러 시작 실패(무시): %s", se2)
+
+        # 텔레그램 알림(best-effort): 전송 실패로 API 결과가 바뀌지 않도록 한다.
+        try:
+            from alarm.notify import notify_telegram_trading_initialize
+
+            telegram_sent = bool(notify_telegram_trading_initialize(result, source="api"))
+            result["telegram_sent"] = telegram_sent
+        except Exception as e:
+            # 텔레그램 미설정/네트워크 오류 등은 초기화 자체를 실패시키지 않는다.
+            logger.warning("초기화 텔레그램 전송 실패(무시): %s", e)
+            result["telegram_sent"] = False
+            result["telegram_error"] = str(e)
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"초기화 중 오류 발생: {str(e)}")
+
 
 # 조건부 주문 요청 모델
 class ConditionalOrderRequest(BaseModel):

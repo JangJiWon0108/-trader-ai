@@ -231,39 +231,3 @@ CREATE TABLE stock_recommendations (
 );
 ```
 
----
-
-## stock_daily_volume
-
-```sql
-CREATE TABLE IF NOT EXISTS stock_daily_volume (
-    "날짜" DATE PRIMARY KEY,
-    "애플" BIGINT,
-    "마이크로소프트" BIGINT,
-    "아마존" BIGINT,
-    "구글 A" BIGINT,
-    "구글 C" BIGINT,
-    "메타" BIGINT,
-    "테슬라" BIGINT,
-    "엔비디아" BIGINT,
-    "코스트코" BIGINT,
-    "넷플릭스" BIGINT,
-    "페이팔" BIGINT,
-    "인텔" BIGINT,
-    "시스코" BIGINT,
-    "컴캐스트" BIGINT,
-    "펩시코" BIGINT,
-    "암젠" BIGINT,
-    "허니웰 인터내셔널" BIGINT,
-    "스타벅스" BIGINT,
-    "몬델리즈" BIGINT,
-    "마이크론" BIGINT,
-    "브로드컴" BIGINT,
-    "어도비" BIGINT,
-    "텍사스 인스트루먼트" BIGINT,
-    "AMD" BIGINT,
-    "어플라이드 머티리얼즈" BIGINT,
-    "S&P 500 ETF" BIGINT,
-    "QQQ ETF" BIGINT
-);
-```

@@ -1,4 +1,3 @@
-import type { CSSProperties } from 'react'
 import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
 import SortableTh from '../../components/SortableTh'
@@ -7,22 +6,7 @@ import { useTableSort } from '../../hooks/useTableSort'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
 import { fetchAllBalances, type KisHolding } from '../../api'
-
-const th: CSSProperties = {
-  padding: '12px 14px',
-  fontSize: 12,
-  fontWeight: 600,
-  color: theme.onSurfaceVariant,
-  textAlign: 'left',
-  borderBottom: `1px solid ${theme.outline}`,
-}
-const td: CSSProperties = {
-  padding: '14px',
-  fontSize: 14,
-  fontVariantNumeric: 'tabular-nums',
-  color: theme.onSurface,
-  borderBottom: `1px solid ${theme.surfaceContainer}`,
-}
+import { tdBase, thColHead, tableScrollBox } from '../../components/gridTableStyles'
 
 function fmt(n: number | string | null | undefined, digits = 2) {
   const v = typeof n === 'string' ? parseFloat(n) : n
@@ -131,7 +115,7 @@ export default function Portfolio() {
       </div>
 
       <Card title="보유 종목 목록" subtitle="비중은 평가 금액 기준 · 헤더 클릭으로 정렬">
-        <div style={{ overflowX: 'auto' }}>
+        <div style={tableScrollBox}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr>
@@ -146,29 +130,29 @@ export default function Portfolio() {
                   { id: 'weight', label: '비중', align: 'right' as const, tip: '총 포트폴리오 대비 해당 종목 비율' },
                 ].map(({ id, label, align, tip }) => (
                   <SortableTh key={id} colId={id} label={label} align={align} sortKey={sortKey} sortDir={sortDir} onSort={requestSort}
-                    style={{ ...th, textAlign: align }} tip={tip} />
+                    style={{ ...thColHead, textAlign: align }} tip={tip} />
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading && (
-                <tr><td colSpan={8} style={{ ...td, textAlign: 'center', color: theme.onSurfaceVariant }}>잔고 조회 중…</td></tr>
+                <tr><td colSpan={8} style={{ ...tdBase, textAlign: 'center', color: theme.onSurfaceVariant }}>잔고 조회 중…</td></tr>
               )}
               {!loading && rows.length === 0 && (
-                <tr><td colSpan={8} style={{ ...td, textAlign: 'center', color: theme.onSurfaceVariant }}>보유 종목 없음</td></tr>
+                <tr><td colSpan={8} style={{ ...tdBase, textAlign: 'center', color: theme.onSurfaceVariant }}>보유 종목 없음</td></tr>
               )}
               {sortedRows.map((r) => (
                 <tr key={r.symbol}>
-                  <td style={{ ...td, fontWeight: 600 }}>{r.symbol}</td>
-                  <td style={td}>{r.name}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>{r.qty.toFixed(0)}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>${fmt(r.avgCost)}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>${fmt(r.price)}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>${fmt(r.evalAmt)}</td>
-                  <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: r.pnlPct >= 0 ? theme.positive : theme.negative }}>
+                  <td style={{ ...tdBase, fontWeight: 900 }}>{r.symbol}</td>
+                  <td style={tdBase}>{r.name}</td>
+                  <td style={{ ...tdBase, textAlign: 'right' }}>{r.qty.toFixed(0)}</td>
+                  <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(r.avgCost)}</td>
+                  <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(r.price)}</td>
+                  <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(r.evalAmt)}</td>
+                  <td style={{ ...tdBase, textAlign: 'right', fontWeight: 900, color: r.pnlPct >= 0 ? theme.positive : theme.negative }}>
                     {r.pnlPct >= 0 ? '+' : ''}{r.pnlPct.toFixed(2)}%
                   </td>
-                  <td style={{ ...td, textAlign: 'right' }}>{r.weight.toFixed(1)}%</td>
+                  <td style={{ ...tdBase, textAlign: 'right' }}>{r.weight.toFixed(1)}%</td>
                 </tr>
               ))}
             </tbody>

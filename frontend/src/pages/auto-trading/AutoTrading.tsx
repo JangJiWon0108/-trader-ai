@@ -1,18 +1,12 @@
-import { useState } from 'react'
 import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
 import Tooltip from '../../components/Tooltip'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
 import {
+  fetchAdminPublicConfig,
   fetchSchedulerStatus,
   fetchSellCandidates,
-  startBuyScheduler,
-  stopBuyScheduler,
-  startSellScheduler,
-  stopSellScheduler,
-  triggerBuy,
-  triggerSell,
 } from '../../api'
 
 function StatusPill({ running }: { running: boolean }) {
@@ -41,72 +35,25 @@ function StatusPill({ running }: { running: boolean }) {
   )
 }
 
-function ActionBtn({
-  label,
-  onClick,
-  danger,
-  disabled,
-}: {
-  label: string
-  onClick: () => void
-  danger?: boolean
-  disabled?: boolean
-}) {
-  return (
-    <button
-      disabled={disabled}
-      onClick={onClick}
-      className="trader-btn"
-      style={{
-        padding: '8px 16px',
-        borderRadius: theme.radiusMd,
-        fontSize: 13,
-        fontWeight: 700,
-        cursor: disabled ? 'default' : 'pointer',
-        border: 'none',
-        background: disabled ? theme.surfaceContainer : danger ? 'rgba(225,29,72,0.15)' : 'rgba(5,150,105,0.15)',
-        color: disabled ? theme.onSurfaceVariant : danger ? theme.negative : theme.positive,
-        opacity: disabled ? 0.6 : 1,
-        transition: 'all 0.15s',
-      }}
-    >
-      {label}
-    </button>
-  )
-}
-
 export default function AutoTrading() {
-  const [toastMsg, setToastMsg] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  const { data: status, loading: sLoading, refetch: refetchStatus } = useApi(fetchSchedulerStatus)
+  const { data: status, loading: sLoading } = useApi(fetchSchedulerStatus)
   const { data: sellCandidates, loading: scLoading } = useApi(fetchSellCandidates)
-
-  const toast = (msg: string) => {
-    setToastMsg(msg)
-    setTimeout(() => setToastMsg(null), 3000)
-  }
-
-  async function act(fn: () => Promise<{ message: string }>) {
-    setBusy(true)
-    try {
-      const r = await fn()
-      toast(r.message)
-      refetchStatus()
-    } catch (e: unknown) {
-      toast(`오류: ${(e as Error).message}`)
-    } finally {
-      setBusy(false)
-    }
-  }
+  const { data: cfg } = useApi(fetchAdminPublicConfig)
 
   const buyRunning = status?.buy_running ?? false
   const sellRunning = status?.sell_running ?? false
 
+  const buyTime = cfg?.schedule?.auto_buy_time_kst ?? '23:35'
+  const sellEveryMin = cfg?.schedule?.auto_sell_interval_min ?? 1
+  const econTime = cfg?.schedule?.economic_update_time_kst ?? '06:10'
+  const tp = cfg?.sell?.take_profit_pct ?? 5
+  const sl = cfg?.sell?.stop_loss_pct ?? -5
+  const rsiOb = cfg?.sell?.rsi_overbought ?? 70
+
   const rules = [
-    { name: '자동 매수', detail: '매일 23:35 KST (미국 개장 5분 후)', running: buyRunning },
-    { name: '자동 매도', detail: '1분 간격 · 장중에만 실행', running: sellRunning },
-    { name: '경제 데이터 수집', detail: '매일 06:10 KST (미국 장 마감 10분 후)', running: true },
+    { name: '자동 매수', detail: `매일 ${buyTime} KST`, running: buyRunning },
+    { name: '자동 매도', detail: `${sellEveryMin}분 간격 · 장중에만 실행`, running: sellRunning },
+    { name: '경제 데이터 수집', detail: `매일 ${econTime} KST`, running: true },
   ]
 
   interface SellCandidate {
@@ -123,39 +70,17 @@ export default function AutoTrading() {
 
   return (
     <div style={{ padding: theme.pagePadding, fontFamily: theme.fontSans, minHeight: '100%', position: 'relative' }}>
-      <PageHeader title="자동매매 현황" subtitle="스케줄러 상태 · 매수/매도 제어" />
-
-      {toastMsg && (
-        <div style={{
-          position: 'fixed', bottom: 32, right: 32, zIndex: 9999,
-          padding: '12px 20px', borderRadius: theme.radiusMd,
-          background: theme.surface, border: `1px solid ${theme.outline}`,
-          color: theme.onSurface, fontSize: 14, fontWeight: 600,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
-        }}>
-          {toastMsg}
-        </div>
-      )}
+      <PageHeader title="자동매매 현황" subtitle="스케줄러 상태" />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: theme.gutter, marginBottom: theme.gutter }}>
         {/* Buy scheduler */}
-        <Card title={<Tooltip tip="매일 23:35 KST (미국 개장 5분 후) 기술·감성·AI 통합 종목 자동 매수">매수 스케줄러</Tooltip>}>
+        <Card title={<Tooltip tip={`매일 ${buyTime} KST 기술·감성·AI 통합 종목 자동 매수`}>매수 스케줄러</Tooltip>}>
           <StatusPill running={buyRunning} />
-          <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <ActionBtn label="시작" onClick={() => act(startBuyScheduler)} disabled={busy || buyRunning} />
-            <ActionBtn label="중지" danger onClick={() => act(stopBuyScheduler)} disabled={busy || !buyRunning} />
-            <ActionBtn label="즉시 실행" onClick={() => act(triggerBuy)} disabled={busy} />
-          </div>
         </Card>
 
         {/* Sell scheduler */}
-        <Card title={<Tooltip tip="1분 간격으로 매도 조건 체크 · 익절 +5% / 손절 -5% / 기술 신호">매도 스케줄러</Tooltip>}>
+        <Card title={<Tooltip tip={`${sellEveryMin}분 간격으로 매도 조건 체크 · 익절 +${tp}% / 손절 ${sl}% / 기술 신호`}>매도 스케줄러</Tooltip>}>
           <StatusPill running={sellRunning} />
-          <div style={{ marginTop: 16, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <ActionBtn label="시작" onClick={() => act(startSellScheduler)} disabled={busy || sellRunning} />
-            <ActionBtn label="중지" danger onClick={() => act(stopSellScheduler)} disabled={busy || !sellRunning} />
-            <ActionBtn label="즉시 실행" onClick={() => act(triggerSell)} disabled={busy} />
-          </div>
         </Card>
       </div>
 
@@ -188,7 +113,7 @@ export default function AutoTrading() {
         </Card>
 
         {/* Sell candidates */}
-        <Card title="현재 매도 대상" subtitle="익절 +5% / 손절 -5% · 데드크로스·RSI>70·MACD 매도신호">
+        <Card title="현재 매도 대상" subtitle={`익절 +${tp}% / 손절 ${sl}% · RSI>${rsiOb}·MACD 매도신호`}>
           {scLoading && <div style={{ color: theme.onSurfaceVariant, padding: 12 }}>로딩 중…</div>}
           {!scLoading && candidates.length === 0 && (
             <div style={{ color: theme.onSurfaceVariant, padding: '12px 0' }}>매도 대상 종목 없음</div>

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 class StockPrediction(BaseModel):
     stock: str
     # Supabase 원천 컬럼이 NULL일 수 있어 프론트 타입(Nullable)과 정합을 맞춘다.
+    accuracy: Optional[float] = None
     last_price: Optional[float] = None
     predicted_price: Optional[float] = None
     rise_probability: Optional[float] = None

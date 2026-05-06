@@ -8,23 +8,8 @@ import Tooltip from '../../components/Tooltip'
 import { useTableSort } from '../../hooks/useTableSort'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
-import { fetchCombinedRecommendations, fetchPredictions, type CombinedRecommendation, type StockPrediction } from '../../api'
-
-const th: CSSProperties = {
-  padding: '12px 10px',
-  fontSize: 12,
-  fontWeight: 600,
-  color: theme.onSurfaceVariant,
-  textAlign: 'left',
-  borderBottom: `1px solid ${theme.outline}`,
-}
-const td: CSSProperties = {
-  padding: '12px 10px',
-  fontSize: 13,
-  borderBottom: `1px solid ${theme.surfaceContainer}`,
-  color: theme.onSurface,
-  verticalAlign: 'top',
-}
+import { fetchAdminPublicConfig, fetchCombinedRecommendations, fetchPredictions, type CombinedRecommendation, type StockPrediction } from '../../api'
+import { tdBase, thColHead, tableScrollBox } from '../../components/gridTableStyles'
 
 function fmt(n: number | null | undefined, digits = 2) {
   if (n == null) return '—'
@@ -39,9 +24,9 @@ function signalVariant(rec: string): 'buy' | 'sell' | 'hold' | 'neutral' {
   return 'neutral'
 }
 
-function SentimentDot({ score }: { score: number | undefined }) {
+function SentimentDot({ score, threshold }: { score: number | undefined; threshold: number }) {
   if (score == null) return <span style={{ color: theme.onSurfaceVariant }}>—</span>
-  const color = score >= 0.15 ? theme.positive : score <= -0.15 ? theme.negative : theme.onSurfaceVariant
+  const color = score >= threshold ? theme.positive : score <= -threshold ? theme.negative : theme.onSurfaceVariant
   return <span style={{ fontWeight: 700, color }}>{score >= 0 ? '+' : ''}{score.toFixed(3)}</span>
 }
 
@@ -63,6 +48,7 @@ type PredRow = StockPrediction & { _type: 'pred' }
 const predAccessors: Record<string, (r: PredRow) => string | number> = {
   stock: (r) => r.stock,
   recommendation: (r) => r.recommendation ?? '',
+  accuracy: (r) => r.accuracy ?? 0,
   rise_probability: (r) => r.rise_probability ?? 0,
   last_price: (r) => r.last_price ?? 0,
   predicted_price: (r) => r.predicted_price ?? 0,
@@ -73,8 +59,13 @@ type Tab = 'combined' | 'ai'
 export default function Recommendations() {
   const [tab, setTab] = useState<Tab>('combined')
 
+  const { data: cfg } = useApi(fetchAdminPublicConfig)
   const combined = useApi(fetchCombinedRecommendations)
   const aiPreds = useApi(fetchPredictions)
+
+  const sentimentMin = cfg?.buy?.sentiment_min ?? 0.15
+  const accMin = cfg?.buy?.model_accuracy_min ?? 80
+  const riseMin = cfg?.buy?.rise_prob_min ?? 3
 
   const combRows: CombRow[] = (combined.data?.results ?? []).map((r) => ({ ...r, _type: 'combined' as const }))
   const predRows: PredRow[] = (aiPreds.data ?? []).map((r) => ({ ...r, _type: 'pred' as const }))
@@ -115,12 +106,12 @@ export default function Recommendations() {
       </div>
 
       {tab === 'combined' && (
-        <Card title="통합 추천 종목" subtitle="골든크로스·MACD·RSI + 감성점수 ≥ 0.15 필터링">
+        <Card title="통합 추천 종목" subtitle={`골든크로스·MACD·RSI + 감성점수 ≥ ${sentimentMin} 필터링`}>
           {combined.loading && <div style={{ padding: 20, color: theme.onSurfaceVariant }}>데이터 로딩 중…</div>}
           {combined.error && <div style={{ padding: 20, color: theme.negative }}>오류: {combined.error}</div>}
           {!combined.loading && combRows.length === 0 && <div style={{ padding: 20, color: theme.onSurfaceVariant }}>조건을 만족하는 종목이 없습니다</div>}
           {combRows.length > 0 && (
-            <div style={{ overflowX: 'auto' }}>
+            <div style={tableScrollBox}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
                 <thead>
                   <tr>
@@ -131,28 +122,28 @@ export default function Recommendations() {
                       { id: 'rise_probability', label: '상승확률', right: true, tip: 'AI 모델 예측 상승 확률 (%)' },
                       { id: 'last_price', label: '현재가', right: true, tip: '가장 최근 실제 체결가 (USD)' },
                       { id: 'predicted_price', label: '예측가', right: true, tip: 'LSTM 모델이 예측한 미래 가격 (USD)' },
-                      { id: 'sentiment_score', label: '감성점수', right: true, tip: '뉴스 감성 점수 (-1~1) · 0.15↑ 긍정 / -0.15↓ 부정' },
+                      { id: 'sentiment_score', label: '감성점수', right: true, tip: `뉴스 감성 점수 (-1~1) · ${sentimentMin}↑ 긍정 / -${sentimentMin}↓ 부정` },
                       { id: 'accuracy', label: '정확도', right: true, tip: '모델 백테스트 예측 정확도 (%)' },
                     ].map(({ id, label, right, tip }) => (
                       <SortableTh key={id} colId={id} label={label} align={right ? 'right' : 'left'}
                         sortKey={ck} sortDir={cd} onSort={cr}
-                        style={{ ...th, textAlign: right ? 'right' : 'left' }} tip={tip} />
+                        style={{ ...thColHead, textAlign: right ? 'right' : 'left' }} tip={tip} />
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {sortedComb.map((r) => (
                     <tr key={r.ticker}>
-                      <td style={{ ...td, fontWeight: 700 }}>{r.ticker}</td>
-                      <td style={td}>{r.stock_name}</td>
-                      <td style={td}><Badge variant={signalVariant(r.recommendation)} /></td>
-                      <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: r.rise_probability > 0 ? theme.positive : theme.negative }}>
+                      <td style={{ ...tdBase, fontWeight: 900 }}>{r.ticker}</td>
+                      <td style={tdBase}>{r.stock_name}</td>
+                      <td style={tdBase}><Badge variant={signalVariant(r.recommendation)} /></td>
+                      <td style={{ ...tdBase, textAlign: 'right', fontWeight: 900, color: r.rise_probability > 0 ? theme.positive : theme.negative }}>
                         {fmt(r.rise_probability, 1)}%
                       </td>
-                      <td style={{ ...td, textAlign: 'right' }}>${fmt(r.last_price)}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>${fmt(r.predicted_price)}</td>
-                      <td style={{ ...td, textAlign: 'right' }}><SentimentDot score={r.sentiment_score ?? r.average_sentiment_score} /></td>
-                      <td style={{ ...td, textAlign: 'right' }}>{r.accuracy != null ? `${fmt(r.accuracy, 1)}%` : '—'}</td>
+                      <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(r.last_price)}</td>
+                      <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(r.predicted_price)}</td>
+                      <td style={{ ...tdBase, textAlign: 'right' }}><SentimentDot score={r.sentiment_score ?? r.average_sentiment_score} threshold={sentimentMin} /></td>
+                      <td style={{ ...tdBase, textAlign: 'right' }}>{r.accuracy != null ? `${fmt(r.accuracy, 1)}%` : '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -163,40 +154,42 @@ export default function Recommendations() {
       )}
 
       {tab === 'ai' && (
-        <Card title="AI 모델 예측" subtitle="LSTM 모델 기반 · 정확도 80% 이상 + 상승확률 3% 이상">
+        <Card title="AI 모델 예측" subtitle={`LSTM 모델 기반 · 정확도 ${accMin}% 이상 + 상승확률 ${riseMin}% 이상`}>
           {aiPreds.loading && <div style={{ padding: 20, color: theme.onSurfaceVariant }}>데이터 로딩 중…</div>}
           {aiPreds.error && <div style={{ padding: 20, color: theme.negative }}>오류: {aiPreds.error}</div>}
           {!aiPreds.loading && predRows.length === 0 && <div style={{ padding: 20, color: theme.onSurfaceVariant }}>데이터 없음</div>}
           {predRows.length > 0 && (
-            <div style={{ overflowX: 'auto' }}>
+            <div style={tableScrollBox}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 700 }}>
                 <thead>
                   <tr>
                     {[
                       { id: 'stock', label: '종목명' },
                       { id: 'recommendation', label: '신호', tip: 'LSTM 모델의 매수/매도/보유 판단' },
+                      { id: 'accuracy', label: '정확도', right: true, tip: '모델 백테스트 예측 정확도 (%)' },
                       { id: 'rise_probability', label: '상승확률', right: true, tip: 'AI 모델 예측 상승 확률 (%)' },
                       { id: 'last_price', label: '현재가', right: true, tip: '가장 최근 실제 체결가 (USD)' },
                       { id: 'predicted_price', label: '예측가', right: true, tip: 'LSTM 모델이 예측한 미래 가격 (USD)' },
                     ].map(({ id, label, right, tip }) => (
                       <SortableTh key={id} colId={id} label={label} align={right ? 'right' : 'left'}
                         sortKey={pk} sortDir={pd} onSort={pr}
-                        style={{ ...th, textAlign: right ? 'right' : 'left' }} tip={tip} />
+                        style={{ ...thColHead, textAlign: right ? 'right' : 'left' }} tip={tip} />
                     ))}
-                    <th style={th}><Tooltip tip="AI가 생성한 해당 종목 투자 근거 요약">분석 요약</Tooltip></th>
+                    <th style={thColHead}><Tooltip tip="AI가 생성한 해당 종목 투자 근거 요약">분석 요약</Tooltip></th>
                   </tr>
                 </thead>
                 <tbody>
                   {sortedPred.map((p) => (
                     <tr key={p.stock}>
-                      <td style={{ ...td, fontWeight: 600 }}>{p.stock}</td>
-                      <td style={td}><Badge variant={signalVariant(p.recommendation ?? '')} /></td>
-                      <td style={{ ...td, textAlign: 'right', fontWeight: 700, color: (p.rise_probability ?? 0) > 0 ? theme.positive : theme.negative }}>
+                      <td style={{ ...tdBase, fontWeight: 900 }}>{p.stock}</td>
+                      <td style={tdBase}><Badge variant={signalVariant(p.recommendation ?? '')} /></td>
+                      <td style={{ ...tdBase, textAlign: 'right' }}>{p.accuracy != null ? `${fmt(p.accuracy, 1)}%` : '—'}</td>
+                      <td style={{ ...tdBase, textAlign: 'right', fontWeight: 900, color: (p.rise_probability ?? 0) > 0 ? theme.positive : theme.negative }}>
                         {fmt(p.rise_probability, 1)}%
                       </td>
-                      <td style={{ ...td, textAlign: 'right' }}>${fmt(p.last_price)}</td>
-                      <td style={{ ...td, textAlign: 'right' }}>${fmt(p.predicted_price)}</td>
-                      <td style={{ ...td, fontSize: 12, color: theme.onSurfaceVariant, maxWidth: 300 }}>
+                      <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(p.last_price)}</td>
+                      <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(p.predicted_price)}</td>
+                      <td style={{ ...tdBase, fontSize: 12, color: theme.onSurfaceVariant, maxWidth: 300, whiteSpace: 'normal' }}>
                         {p.analysis ?? '—'}
                       </td>
                     </tr>

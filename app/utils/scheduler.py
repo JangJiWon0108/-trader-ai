@@ -20,10 +20,20 @@ from alarm.notify import (
     notify_telegram_economic_update,
     notify_telegram_inference_failure,
     notify_telegram_inference_success,
+    notify_telegram_inference_skipped,
+    notify_telegram_sentiment_update,
+    notify_telegram_sentiment_skipped,
     notify_telegram_trading_job_exception,
 )
 from app.core.config import settings
-from app.services.balance_service import get_all_overseas_balances, get_current_price, order_overseas_stock
+from app.services.balance_service import (
+    get_all_overseas_balances,
+    get_current_price,
+    order_overseas_stock,
+    sync_holdings_to_db,
+    sync_order_fills_to_db,
+    sync_open_orders_to_db,
+)
 from app.services.economic_service import update_economic_data_in_background
 from app.services.stock_recommendation_service import StockRecommendationService
 
@@ -202,7 +212,7 @@ class StockScheduler:
                 schedule.run_pending()
             time.sleep(1)
     
-    def _run_auto_buy(self):
+    def _run_auto_buy(self, *, telegram_label: str | None = None):
         """자동 매수 실행 함수 - 스케줄링된 시간에 실행됨"""
         try:
             logger.info("자동 매수 작업 시작")
@@ -216,7 +226,7 @@ class StockScheduler:
                 summary["balance_snapshot"] = None
             try:
                 from alarm.notify import notify_telegram_auto_buy_run
-                summary["telegram_sent"] = notify_telegram_auto_buy_run(summary)
+                summary["telegram_sent"] = notify_telegram_auto_buy_run(summary, label=telegram_label)
             except Exception as te:
                 summary["telegram_sent"] = False
                 logger.warning("매수 텔레그램 전송 실패: %s", te)
@@ -228,7 +238,10 @@ class StockScheduler:
             return True
         except Exception as e:
             logger.error(f"자동 매수 작업 중 오류 발생: {str(e)}", exc_info=True)
-            notify_telegram_trading_job_exception("자동 매수", e)
+            job_label = "자동 매수"
+            if (telegram_label or "").strip():
+                job_label = f"{job_label} {telegram_label.strip()}"
+            notify_telegram_trading_job_exception(job_label, e)
             return False
 
     def _run_auto_sell(self):
@@ -312,6 +325,14 @@ class StockScheduler:
             summary["success"] = True
             summary["candidate_count"] = 0
             return summary
+
+        # 장중에는 프론트가 DB에서만 읽도록: KIS → Supabase 스냅샷을 1분마다 갱신
+        try:
+            sync_holdings_to_db()
+            sync_order_fills_to_db()
+            sync_open_orders_to_db()
+        except Exception:
+            logger.warning("장중 KIS→DB 동기화 실패(스케줄은 계속)", exc_info=True)
 
         logger.info(
             f"미국 장 시간 확인: {now_in_korea.strftime('%Y-%m-%d %H:%M:%S')} (뉴욕: {now_in_ny.strftime('%Y-%m-%d %H:%M:%S')})"
@@ -481,7 +502,13 @@ class StockScheduler:
                         api_message=msg1,
                         success=order_success,
                         source="auto_sell",
-                        payload=order_result,
+                        payload={
+                            "reason": "sell_candidates(strategy_rules)",
+                            "sell_reasons": sell_reasons,
+                            "meta": _cmeta,
+                            "order_result": order_result,
+                            "order_request": order_data,
+                        },
                         ny_trading_date=now_in_ny.strftime("%Y-%m-%d"),
                     )
                 except Exception as oe:
@@ -536,6 +563,13 @@ class StockScheduler:
                 time.sleep(1)
 
         logger.info("자동 매도 처리가 완료되었습니다.")
+        # 주문 직후 DB도 최대한 최신 상태로 맞춰둔다(체결/미체결 반영 지연 최소화)
+        try:
+            sync_holdings_to_db()
+            sync_order_fills_to_db()
+            sync_open_orders_to_db()
+        except Exception:
+            logger.warning("매도 후 KIS→DB 재동기화 실패(무시)", exc_info=True)
         summary["status"] = "completed"
         bad = {"order_failed", "candidate_exception"}
         summary["success"] = not any((it.get("outcome") in bad) for it in summary["items"])
@@ -638,7 +672,10 @@ class StockScheduler:
                     summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "invalid_price"})
                     continue
 
-                quantity = settings.TRADING_BUY_QUANTITY
+                if settings.TRADING_BUY_AMOUNT_USD > 0 and current_price > 0:
+                    quantity = max(1, int(settings.TRADING_BUY_AMOUNT_USD // current_price))
+                else:
+                    quantity = settings.TRADING_BUY_QUANTITY
                 order_data = {
                     "CANO": settings.KIS_CANO,
                     "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
@@ -692,7 +729,12 @@ class StockScheduler:
                     api_message=msg1,
                     success=order_success,
                     source="auto_buy",
-                    payload=order_result,
+                    payload={
+                        "reason": "combined_recommendation(technical+sentiment+ai)",
+                        "meta": _bmeta,
+                        "order_result": order_result,
+                        "order_request": order_data,
+                    },
                     ny_trading_date=now_ny.strftime("%Y-%m-%d"),
                 )
 
@@ -713,6 +755,12 @@ class StockScheduler:
                 summary["success"] = False
 
         logger.info("자동 매수 처리가 완료되었습니다.")
+        try:
+            sync_holdings_to_db()
+            sync_order_fills_to_db()
+            sync_open_orders_to_db()
+        except Exception:
+            logger.warning("매수 후 KIS→DB 재동기화 실패(무시)", exc_info=True)
         return summary
 
 # 싱글톤 인스턴스 생성
@@ -862,6 +910,11 @@ def get_all_schedules_overview() -> dict:
 def run_auto_buy_now():
     """즉시 매수 실행 함수 (테스트용)"""
     stock_scheduler._run_auto_buy()
+
+
+def run_manual_buy_now():
+    """수동 매수 실행 함수 (관리자용) — 텔레그램에 (수동 매수) 라벨을 포함."""
+    stock_scheduler._run_auto_buy(telegram_label="(수동 매수)")
     
 def run_auto_sell_now():
     """즉시 매도 실행 함수 (테스트용)"""
@@ -907,8 +960,63 @@ def _run_economic_data_update(telegram_source: str = "경제스케줄"):
                 )
                 inf_tg_sent = notify_telegram_inference_failure(inf_e, source=f"{telegram_source}_추론")
                 save_daily_inference_log({"error": str(inf_e)}, telegram_sent=inf_tg_sent)
-        elif rdict.get("success") and updated == 0:
-            elog.info("저장된 신규 행이 없어 추론을 건너뜁니다.")
+        else:
+            # 실행 조건이 안 맞아도 결과를 텔레그램으로 통일성 있게 전송한다.
+            if not settings.SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE:
+                reason = "disabled_by_settings(SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE=false)"
+            elif not rdict.get("success"):
+                reason = "economic_update_failed_or_skipped"
+            elif updated == 0:
+                reason = "no_new_rows(updated_records=0)"
+            else:
+                reason = f"unknown_condition(updated_records={updated})"
+            elog.info("추론 스킵: %s", reason)
+            try:
+                notify_telegram_inference_skipped(
+                    source=f"{telegram_source}_추론",
+                    reason=reason,
+                    context={
+                        "economic_success": bool(rdict.get("success")),
+                        "updated_records": updated,
+                    },
+                )
+            except Exception:
+                elog.warning("추론 스킵 텔레그램 전송 실패(무시)", exc_info=True)
+
+        if rdict.get("success"):
+            try:
+                from app.services.stock_recommendation_service import (
+                    StockRecommendationService,
+                    has_today_sentiment_data_kst,
+                )
+                if has_today_sentiment_data_kst():
+                    elog.info("뉴스 감성 분석 스킵 — 오늘(KST) 데이터 이미 존재")
+                    try:
+                        notify_telegram_sentiment_skipped(
+                            source=telegram_source,
+                            reason="already_loaded_today_kst",
+                            context={"today_loaded": True},
+                        )
+                    except Exception:
+                        elog.warning("감성 스킵 텔레그램 전송 실패(무시)", exc_info=True)
+                else:
+                    elog.info("뉴스 감성 분석 시작 (장 열리기 전 최신 뉴스 갱신)")
+                    sent_result = StockRecommendationService().fetch_and_store_sentiment_for_recommendations()
+                    elog.info("뉴스 감성 분석 완료: %s", sent_result)
+                    notify_telegram_sentiment_update(sent_result or {}, source=telegram_source)
+            except Exception as sent_e:
+                elog.error("뉴스 감성 분석 실패 (스케줄 계속): %s", sent_e, exc_info=True)
+                notify_telegram_sentiment_update({"error": str(sent_e)}, source=telegram_source)
+        else:
+            # 경제 업데이트가 실패/스킵이면 감성도 실행되지 않으므로 스킵 결과를 통일성 있게 전송한다.
+            try:
+                notify_telegram_sentiment_skipped(
+                    source=telegram_source,
+                    reason="economic_update_failed_or_skipped",
+                    context={"economic_success": bool(rdict.get("success"))},
+                )
+            except Exception:
+                elog.warning("감성 스킵 텔레그램 전송 실패(무시)", exc_info=True)
 
         return True
     except Exception as e:

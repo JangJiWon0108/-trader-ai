@@ -312,17 +312,18 @@ def apply_llm_recommendation_layer(
         "attempted": False,
         "applied": False,
         "error": None,
-        "model_id": getattr(settings, "STOCK_ANALYSIS_GEMINI_MODEL_ID", None),
+        "model_id": getattr(settings, "STOCK_ANALYSIS_UPSTAGE_MODEL_ID", None)
+        or getattr(settings, "STOCK_ANALYSIS_GEMINI_MODEL_ID", None),
         "timeout_sec": float(timeout_sec),
         "max_stocks": int(max_stocks),
     }
 
-    if not settings.GEMINI_API_KEY:
+    if not (getattr(settings, "UPSTAGE_API_KEY", "") or "").strip():
         llm_info["enabled"] = False
-        llm_info["error"] = "GEMINI_API_KEY missing"
+        llm_info["error"] = "UPSTAGE_API_KEY missing"
         return final, llm_info
 
-    from llm import GeminiApiError, get_llm_answer
+    from llm import UpstageApiError, get_llm_answer
 
     df = final.copy()
     n = min(len(df), int(max_stocks))
@@ -362,7 +363,11 @@ def apply_llm_recommendation_layer(
     try:
         raw = get_llm_answer(
             prompt,
-            model_id=str(getattr(settings, "STOCK_ANALYSIS_GEMINI_MODEL_ID", "") or "").strip() or None,
+            model_id=(
+                str(getattr(settings, "STOCK_ANALYSIS_UPSTAGE_MODEL_ID", "") or "").strip()
+                or str(getattr(settings, "STOCK_ANALYSIS_GEMINI_MODEL_ID", "") or "").strip()
+                or None
+            ),
             timeout_sec=float(timeout_sec),
         )
         j = _extract_json_payload(raw)
@@ -371,7 +376,7 @@ def apply_llm_recommendation_layer(
             parsed = [parsed]
         if not isinstance(parsed, list):
             raise ValueError("LLM JSON이 배열이 아님")
-    except (GeminiApiError, json.JSONDecodeError, ValueError) as e:
+    except (UpstageApiError, json.JSONDecodeError, ValueError) as e:
         # 실패 시 그대로 반환 (규칙 기반 Recommendation/Analysis 유지)
         llm_info["error"] = str(e)
         print(f"[WARN] LLM Recommendation/Analysis 생성 실패 — fallback 사용: {e}")
@@ -456,6 +461,7 @@ def build_final_analysis(pred_df: pd.DataFrame, target_columns: list[str], forec
         }
         print(f"[WARN] LLM 레이어 적용 중 예외 — fallback 유지: {e}")
     order = [
+        "data_date",
         "Stock",
         "MAE",
         "MSE",
@@ -469,7 +475,9 @@ def build_final_analysis(pred_df: pd.DataFrame, target_columns: list[str], forec
         "Recommendation",
         "Analysis",
     ]
-    return final[order]
+    # data_date는 run_inference_and_save_to_db()에서 주입될 수 있다.
+    cols = [c for c in order if c in final.columns]
+    return final[cols]
 
 
 def parse_args() -> argparse.Namespace:
@@ -543,6 +551,18 @@ def run_inference_and_save_to_db(
 
     pred_from_db = get_predictions_from_db(supabase)
     final = build_final_analysis(pred_from_db, target_columns, forecast_horizon)
+    # 데이터 기준일: predicted_stocks(=경제/주가 데이터)의 최신 날짜를 stock_analysis_results에 함께 저장한다.
+    # created_at(적재시각)과 분리해서, 프론트 그리드가 "DB에 저장된 기준일"을 그대로 표시할 수 있게 한다.
+    try:
+        data_date = None
+        if "날짜" in pred_from_db.columns and len(pred_from_db) > 0:
+            # pandas Timestamp / datetime.date 등 → YYYY-MM-DD 문자열로 정규화
+            dd = pred_from_db["날짜"].max()
+            data_date = dd.date().isoformat() if hasattr(dd, "date") else str(dd)
+        if data_date:
+            final["data_date"] = data_date
+    except Exception as e:
+        print(f"[WARN] data_date 계산 실패 — created_at만 사용: {e}")
     llm_layer = final.attrs.get("llm_layer") if hasattr(final, "attrs") else None
     analysis_records = dataframe_rows_to_jsonable_records(final)
     save_analysis_to_db(supabase, final)

@@ -3,8 +3,11 @@ import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
 import Sparkline from '../../components/Sparkline'
 import Tooltip from '../../components/Tooltip'
+import CurrencyToggle from '../../components/CurrencyToggle'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
+import { useCurrency } from '../../contexts/CurrencyContext'
+import { formatMoneyFromUsd } from '../../utils/money'
 import {
   fetchAllBalances,
   fetchCombinedRecommendations,
@@ -22,17 +25,17 @@ const cell: CSSProperties = {
   borderBottom: `1px solid ${theme.surfaceContainer}`,
 }
 
-function fmt(n: number | string | null | undefined, digits = 2) {
-  const v = typeof n === 'string' ? parseFloat(n) : n
-  if (v == null || isNaN(v as number)) return '—'
-  return (v as number).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
-}
-
 function fmtPct(n: number | string | null | undefined) {
   const v = typeof n === 'string' ? parseFloat(n) : n
   if (v == null || isNaN(v as number)) return '—'
   const num = v as number
   return `${num >= 0 ? '+' : ''}${num.toFixed(2)}%`
+}
+
+function fmtNum(n: number | string | null | undefined, digits = 2) {
+  const v = typeof n === 'string' ? parseFloat(n) : n
+  if (v == null || isNaN(v as number)) return '—'
+  return (v as number).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 
 function LoadingRow({ cols }: { cols: number }) {
@@ -170,11 +173,16 @@ function linePnlUsd(h: KisHolding): number {
   return lineEvalUsd(h) - lineCostUsd(h)
 }
 
+type SortCol = 'ticker' | 'name' | 'qty' | 'avg' | 'price' | 'pnl'
+
 export default function Dashboard() {
+  const currency = useCurrency()
   const balance = useApi(fetchAllBalances)
   const recommendations = useApi(fetchCombinedRecommendations)
   const scheduler = useApi(fetchSchedulerStatus)
   const fills = useApi(() => fetchOrderFills(45))
+
+  const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>({ col: 'pnl', dir: 'desc' })
 
   const holdings: KisHolding[] = balance.data?.output1 ?? []
   const cashUsd = balance.data?.cashUsdBestEffort ?? 0
@@ -206,6 +214,28 @@ export default function Dashboard() {
 
   const fillRows = useMemo(() => sortFillsDesc(fills.data?.output ?? []).slice(0, 12), [fills.data])
 
+  const sortedHoldings = useMemo(() => {
+    const getVal = (h: KisHolding): number | string => {
+      switch (sort.col) {
+        case 'ticker': return h.ovrs_pdno || ''
+        case 'name':   return h.ovrs_item_name || ''
+        case 'qty':    return parseFloat(h.ovrs_cblc_qty || '0')
+        case 'avg':    return parseFloat(h.pchs_avg_pric || '0')
+        case 'price':  return parseFloat(h.now_pric2 || '0')
+        case 'pnl': {
+          const cost = lineCostUsd(h)
+          const pnlAmt = linePnlUsd(h)
+          return cost > 0 ? (pnlAmt / cost) * 100 : parseFloat(h.evlu_pfls_rt || '0')
+        }
+      }
+    }
+    return [...holdings].sort((a, b) => {
+      const av = getVal(a), bv = getVal(b)
+      const cmp = typeof av === 'string' ? av.localeCompare(bv as string) : (av as number) - (bv as number)
+      return sort.dir === 'asc' ? cmp : -cmp
+    })
+  }, [holdings, sort])
+
   const buyCd = useCountdownMs(scheduler.data?.buy_running ? scheduler.data?.next_auto_buy_at : null)
   const sellCd = useCountdownMs(
     scheduler.data?.sell_running && scheduler.data?.next_sell_check_at
@@ -222,12 +252,23 @@ export default function Dashboard() {
 
   const sparkPos = totalPct >= 0
 
+  const money = (usd: number | string | null | undefined, opts?: { digitsUsd?: number; digitsKrw?: number; sign?: 'auto' | 'always' | 'never' }) =>
+    formatMoneyFromUsd(usd, {
+      unit: currency.unit,
+      usdKrw: currency.usdKrw,
+      digitsUsd: opts?.digitsUsd,
+      digitsKrw: opts?.digitsKrw,
+      sign: opts?.sign,
+    })
+
+  const labelUnit = currency.unit === 'USD' ? 'USD' : 'KRW'
+
   return (
     <div style={{ padding: theme.pagePadding, fontFamily: theme.fontSans, minHeight: '100%' }}>
-      <PageHeader title="대시보드" subtitle="US 시장 · 8개 요약 카드" />
+      <PageHeader title="대시보드" subtitle="US 시장 · 8개 요약 카드" right={<CurrencyToggle />} />
 
       <div style={cardGrid}>
-        <Card title={<Tooltip tip="보유 평가액 + 주문가능外화(거래소 응답 중 최댓값 추정)">총 자산 (USD)</Tooltip>}>
+        <Card title={<Tooltip tip="보유 평가액 + 주문가능外화(거래소 응답 중 최댓값 추정)">{`총 자산 (${labelUnit})`}</Tooltip>}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
             <div>
               <div
@@ -240,11 +281,11 @@ export default function Dashboard() {
                   letterSpacing: '-0.03em',
                 }}
               >
-                {balance.loading ? '로딩 중…' : `$${fmt(totalAssets)}`}
+                {balance.loading ? '로딩 중…' : money(totalAssets, { digitsUsd: 2, digitsKrw: 0 })}
               </div>
-              <div style={{ marginTop: 6, fontSize: 12, color: theme.onSurfaceVariant }}>
-                주식 평가 ${fmt(totalEval)}
-                {cashUsd > 0 ? ` · 추정 현금 $${fmt(cashUsd)}` : ''}
+              <div style={{ marginTop: 6, fontSize: 12, color: theme.onSurfaceVariant, lineHeight: 1.8 }}>
+                <div>주식 평가 {money(totalEval, { digitsUsd: 2, digitsKrw: 0 })}</div>
+                <div>예수금 {cashUsd > 0 ? money(cashUsd, { digitsUsd: 2, digitsKrw: 0 }) : '—'}</div>
               </div>
             </div>
             <Sparkline points={[0.42, 0.45, 0.48, 0.5, 0.52, 0.55, 0.58]} positive={sparkPos} />
@@ -254,7 +295,7 @@ export default function Dashboard() {
         <Card
           title={
             <Tooltip tip="뉴욕 거래일 기준 당일 체결된 매수·매도의 외화 순현금(매수는 지출·매도는 입금). 전일 종가 대비 평가 변동이나 매입 대비 누적 손익과는 다릅니다.">
-              당일 체결 현금 (USD/%)
+              {`당일 체결 현금 (${labelUnit}/%)`}
             </Tooltip>
           }
           subtitle="장중 평가 손익 아님 · 미체결 제외"
@@ -270,7 +311,7 @@ export default function Dashboard() {
                   fontFamily: theme.fontDisplay,
                 }}
               >
-                {fills.loading ? '로딩 중…' : `${todayFlow >= 0 ? '+' : ''}$${fmt(Math.abs(todayFlow))}`}
+                {fills.loading ? '로딩 중…' : money(todayFlow, { digitsUsd: 2, digitsKrw: 0, sign: 'auto' })}
               </div>
               <div style={{ marginTop: 8, fontSize: 13, fontWeight: 700, color: todayPct >= 0 ? theme.positive : theme.negative }}>
                 {fills.loading
@@ -309,7 +350,7 @@ export default function Dashboard() {
                 {balance.loading ? '…' : fmtPct(totalPct)}
               </div>
               <div style={{ marginTop: 8, fontSize: 12, color: theme.onSurfaceVariant }}>
-                평가손익 {totalPnl >= 0 ? '+' : ''}${fmt(Math.abs(totalPnl))}
+                평가손익 {money(totalPnl, { digitsUsd: 2, digitsKrw: 0, sign: 'auto' })}
               </div>
             </div>
             <Sparkline points={[0.5, 0.52, 0.51, 0.54, 0.56, 0.55, 0.58]} positive={sparkPos} />
@@ -418,7 +459,7 @@ export default function Dashboard() {
                 >
                   <span style={{ fontWeight: 800 }}>{r.ticker}</span>
                   <span style={{ color: theme.onSurfaceVariant, fontVariantNumeric: 'tabular-nums' }}>
-                    점수 {fmt(scoreOf(r), 1)} · {r.recommendation}
+                    점수 {fmtNum(scoreOf(r), 1)} · {r.recommendation}
                   </span>
                 </li>
               ))}
@@ -452,7 +493,7 @@ export default function Dashboard() {
                     <span style={{ fontWeight: 700 }}>{row.pdno}</span>
                     <span style={{ color: theme.onSurfaceVariant }}>
                       {' '}
-                      {row.ft_ccld_qty}주 @ ${fmt(row.ft_ccld_unpr3)}
+                      {row.ft_ccld_qty}주 @ {money(row.ft_ccld_unpr3, { digitsUsd: 2, digitsKrw: 0 })}
                     </span>
                   </li>
                 )
@@ -469,18 +510,34 @@ export default function Dashboard() {
               <tr style={{ color: theme.onSurfaceVariant, fontSize: 12 }}>
                 {(
                   [
-                    ['티커', '', 'left'],
-                    ['종목명', '', 'left'],
-                    ['수량', '보유 주식 수 (주)', 'right'],
-                    ['평단', '매입 평균 단가 (USD)', 'right'],
-                    ['현재가', '현재 실시간 체결가 (USD)', 'right'],
-                    ['손익', '매입(평단×수량 등) 대비 평가 손익률 · 상단 총 수익률과 동일 산식', 'right'],
-                  ] as [string, string, string][]
-                ).map(([h, tip, align]) => (
-                  <th key={h} style={{ ...cell, fontWeight: 700, textAlign: align as 'left' | 'right' }}>
-                    {tip ? <Tooltip tip={tip}>{h}</Tooltip> : h}
-                  </th>
-                ))}
+                    ['티커',  '',   'left',  'ticker'],
+                    ['종목명', '',   'left',  'name'],
+                    ['수량',  '보유 주식 수 (주)',                                           'right', 'qty'],
+                    ['평단',  '매입 평균 단가 (USD)',                                         'right', 'avg'],
+                    ['현재가', '현재 실시간 체결가 (USD)',                                      'right', 'price'],
+                    ['손익',  '매입(평단×수량 등) 대비 평가 손익률 · 상단 총 수익률과 동일 산식', 'right', 'pnl'],
+                  ] as [string, string, string, SortCol][]
+                ).map(([label, tip, align, col]) => {
+                  const active = sort.col === col
+                  const indicator = active ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ' ↕'
+                  return (
+                    <th
+                      key={col}
+                      onClick={() => setSort(s => s.col === col ? { col, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: 'asc' })}
+                      style={{
+                        ...cell,
+                        fontWeight: 700,
+                        textAlign: align as 'left' | 'right',
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        color: active ? theme.onSurface : theme.onSurfaceVariant,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {tip ? <Tooltip tip={tip}>{label}{indicator}</Tooltip> : <>{label}{indicator}</>}
+                    </th>
+                  )
+                })}
               </tr>
             </thead>
             <tbody>
@@ -495,7 +552,7 @@ export default function Dashboard() {
                   <td colSpan={6} style={{ ...cell, color: theme.onSurfaceVariant }}>보유 종목 없음</td>
                 </tr>
               )}
-              {holdings.map((h) => {
+              {sortedHoldings.map((h) => {
                 const cost = lineCostUsd(h)
                 const pnlAmt = linePnlUsd(h)
                 const pnlPct = cost > 0 ? (pnlAmt / cost) * 100 : parseFloat(h.evlu_pfls_rt || '0')
@@ -504,8 +561,8 @@ export default function Dashboard() {
                     <td style={{ ...cell, fontWeight: 700 }}>{h.ovrs_pdno}</td>
                     <td style={{ ...cell, fontSize: 13, maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.ovrs_item_name}</td>
                     <td style={{ ...cell, textAlign: 'right' }}>{parseFloat(h.ovrs_cblc_qty || '0').toFixed(0)}</td>
-                    <td style={{ ...cell, textAlign: 'right' }}>${fmt(h.pchs_avg_pric)}</td>
-                    <td style={{ ...cell, textAlign: 'right' }}>${fmt(h.now_pric2)}</td>
+                    <td style={{ ...cell, textAlign: 'right' }}>{money(h.pchs_avg_pric, { digitsUsd: 2, digitsKrw: 0 })}</td>
+                    <td style={{ ...cell, textAlign: 'right' }}>{money(h.now_pric2, { digitsUsd: 2, digitsKrw: 0 })}</td>
                     <td style={{ ...cell, textAlign: 'right', fontWeight: 700, color: pnlAmt >= 0 ? theme.positive : theme.negative }}>
                       {fmtPct(pnlPct)}
                     </td>

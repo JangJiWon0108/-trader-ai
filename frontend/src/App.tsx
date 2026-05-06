@@ -7,7 +7,12 @@ import Recommendations from './pages/ai-recommendations'
 import AutoTrading from './pages/auto-trading'
 import Orders from './pages/orders'
 import Economic from './pages/economic'
+import AlphaAdvantage from './pages/alpha-advantage'
+import InferenceHistory from './pages/inference-history'
+import Admin from './pages/admin'
 import { theme } from './theme'
+import { CurrencyProvider } from './contexts/CurrencyContext'
+import { AlertProvider } from './contexts/AlertContext'
 
 const shell: CSSProperties = {
   display: 'flex',
@@ -22,20 +27,27 @@ const shell: CSSProperties = {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <div style={shell}>
-        <Sidebar />
-        <main className="trader-scroll" style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/portfolio" element={<Portfolio />} />
-            <Route path="/recommendations" element={<Recommendations />} />
-            <Route path="/auto-trading" element={<AutoTrading />} />
-            <Route path="/orders" element={<Orders />} />
-            <Route path="/economic" element={<Economic />} />
-          </Routes>
-        </main>
-      </div>
-    </BrowserRouter>
+    <CurrencyProvider>
+      <AlertProvider>
+        <BrowserRouter>
+          <div style={shell}>
+            <Sidebar />
+            <main className="trader-scroll" style={{ flex: 1, overflow: 'auto', position: 'relative' }}>
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/portfolio" element={<Portfolio />} />
+                <Route path="/recommendations" element={<Recommendations />} />
+                <Route path="/auto-trading" element={<AutoTrading />} />
+                <Route path="/orders" element={<Orders />} />
+                <Route path="/economic" element={<Economic />} />
+              <Route path="/alpha-advantage" element={<AlphaAdvantage />} />
+                <Route path="/inference-history" element={<InferenceHistory />} />
+              <Route path="/admin" element={<Admin />} />
+              </Routes>
+            </main>
+          </div>
+        </BrowserRouter>
+      </AlertProvider>
+    </CurrencyProvider>
   )
 }

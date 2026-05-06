@@ -91,6 +91,7 @@ def read_predictions():
         predictions = [
             StockPrediction(
                 stock=row["Stock"],
+                accuracy=row.get("Accuracy (%)"),
                 last_price=row["Last Actual Price"],
                 predicted_price=row["Predicted Future Price"],
                 rise_probability=row["Rise Probability (%)"],

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
+import pytz
 import requests
 
 from app.core.config import settings
@@ -19,6 +20,31 @@ from app.services.balance_service import get_overseas_balance
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def has_today_sentiment_data_kst() -> bool:
+    """오늘(KST) 감성 데이터가 이미 존재하면 True — Alpha Vantage 일일 호출 제한 보호용."""
+    try:
+        resp = (
+            supabase.table("ticker_sentiment_analysis")
+            .select("calculation_date")
+            .order("calculation_date", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return False
+        raw = (rows[0] or {}).get("calculation_date")
+        if not raw:
+            return False
+        kst = pytz.timezone("Asia/Seoul")
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        today_kst = datetime.now(kst).date()
+        return dt.astimezone(kst).date() == today_kst
+    except Exception:
+        return True  # 판단 불가 시 안전하게 "있다"로 간주 → 호출 차단
+
 
 # ─── 상수 정의 ───
 
@@ -320,10 +346,28 @@ class StockRecommendationService:
         # 보유 주식 정보를 ticker로 매핑
         holdings_by_ticker = {item.get("ovrs_pdno"): item for item in holdings if item.get("ovrs_pdno")}
 
-        # 기존 감정 분석 데이터 삭제
-        logger.info("기존 감정 분석 데이터 삭제 중...")
-        supabase.table("ticker_sentiment_analysis").delete().gte("ticker", "").execute()
-        logger.info("기존 감정 분석 데이터 삭제 완료")
+        # 오늘(KST) 이미 적재되어 있으면 스킵 (일반적 동작)
+        kst = pytz.timezone("Asia/Seoul")
+        today_kst = datetime.now(kst).date().isoformat()
+        try:
+            exists = (
+                supabase.table("ticker_sentiment_analysis")
+                .select("ticker", count="exact")
+                .eq("date_kst", today_kst)
+                .limit(1)
+                .execute()
+            )
+            if (exists.count or 0) > 0:
+                logger.info("감성 데이터(%s) 이미 존재 — 스킵", today_kst)
+                return {
+                    "skipped": True,
+                    "date_kst": today_kst,
+                    "message": f"감성 데이터({today_kst})가 이미 적재되어 있어 스킵했습니다.",
+                    "results": [],
+                }
+        except Exception as e:
+            # 스킵 체크 실패해도 적재는 진행(안전)
+            logger.warning("감성 스킵 체크 실패 — 계속 진행: %s", e, exc_info=True)
 
         results = []
         results_lock = threading.Lock()
@@ -380,15 +424,23 @@ class StockRecommendationService:
 
                 average_sentiment = sum(articles) / len(articles)
                 article_count = len(articles)
-                calculation_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # KST 기준 날짜/시각을 명시적으로 저장
+                now_kst = datetime.now(kst)
+                calculation_date = now_kst.isoformat()
+                date_kst = now_kst.date().isoformat()
 
                 supabase_data = {
                     "ticker": ticker,
                     "average_sentiment_score": average_sentiment,
                     "article_count": article_count,
-                    "calculation_date": calculation_date
+                    "calculation_date": calculation_date,
+                    "date_kst": date_kst,
                 }
-                supabase.table("ticker_sentiment_analysis").insert(supabase_data).execute()
+                # 일별 누적: (date_kst, ticker) 유니크 키 기반 upsert
+                supabase.table("ticker_sentiment_analysis").upsert(
+                    supabase_data,
+                    on_conflict="date_kst,ticker",
+                ).execute()
 
                 with results_lock:
                     results.append({

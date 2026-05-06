@@ -194,26 +194,102 @@ def run_eod_llm_report_daily() -> None:
 
     from alarm.notify import notify_telegram_daily_eod_report, notify_telegram_eod_report_generation_failed
     from app.services.daily_log_service import save_daily_eod_llm_log
-    from llm import GeminiApiError, get_llm_answer
+    from llm import UpstageApiError, get_llm_answer
+
+    report: str | None = None
+    phase: str = "success"
+    error_msg: str | None = None
 
     try:
         log.info("EOD LLM 리포트 생성 시작 (집계 NY date=%s)", target_ny_date)
         ctx = gather_eod_llm_context(target_ny_date)
         prompt = _build_prompt(target_ny_date, ctx)
-        report = get_llm_answer(prompt, model_id=(settings.EOD_LLM_GEMINI_MODEL_ID or None))
-        tg_sent = notify_telegram_daily_eod_report(report, ny_date=target_ny_date)
-        if tg_sent:
-            _write_last_sent_ny_date(target_ny_date)
-            log.info("EOD LLM 리포트 전송 완료 (NY date=%s)", target_ny_date)
-            save_daily_eod_llm_log(target_ny_date, status="sent", report_text=report, telegram_sent=True)
-        else:
-            log.warning("EOD LLM 텔레그램 전송 실패 — 상태 파일 미갱신")
-            save_daily_eod_llm_log(target_ny_date, status="telegram_failed", report_text=report, telegram_sent=False)
-    except GeminiApiError as e:
-        log.error("EOD LLM Gemini 오류: %s", e, exc_info=True)
-        notify_telegram_eod_report_generation_failed(e, ny_date=target_ny_date, phase="gemini")
-        save_daily_eod_llm_log(target_ny_date, status="gemini_error", error=str(e), phase="gemini", telegram_sent=False)
+        report = get_llm_answer(
+            prompt,
+            model_id=(
+                (getattr(settings, "EOD_LLM_UPSTAGE_MODEL_ID", "") or "").strip()
+                or (getattr(settings, "EOD_LLM_GEMINI_MODEL_ID", "") or "").strip()
+                or None
+            ),
+        )
+    except UpstageApiError as e:
+        phase = "upstage"
+        error_msg = str(e)
+        log.error("EOD LLM Upstage 오류: %s", e, exc_info=True)
+        # 실패해도 '오늘 리포트' 형태로 텔레그램 전송을 시도해야 함
+        report = "\n".join(
+            [
+                "제목: 일일 마감 리포트 생성 실패",
+                "",
+                f"- 집계 NY date: {target_ny_date}",
+                f"- 실패 사유: {error_msg}",
+            ]
+        )
     except Exception as e:
+        phase = "general"
+        error_msg = str(e)
         log.error("EOD LLM 리포트 실패: %s", e, exc_info=True)
-        notify_telegram_eod_report_generation_failed(e, ny_date=target_ny_date, phase="general")
-        save_daily_eod_llm_log(target_ny_date, status="general_error", error=str(e), phase="general", telegram_sent=False)
+        report = "\n".join(
+            [
+                "제목: 일일 마감 리포트 생성 실패",
+                "",
+                f"- 집계 NY date: {target_ny_date}",
+                f"- 실패 사유: {error_msg}",
+            ]
+        )
+
+    # 성공/실패 상관없이 텔레그램 전송 시도
+    tg_sent = False
+    try:
+        tg_sent = notify_telegram_daily_eod_report(report or "(빈 리포트)", ny_date=target_ny_date)
+    except Exception as e:
+        # 텔레그램 전송 자체가 실패한 경우에도 "실패 사유"를 보내고 싶지만, 채널이 텔레그램이라 추가 전송은 불가.
+        # 대신 실패 원인을 로그/DB에 남김.
+        phase = "telegram"
+        error_msg = str(e)
+        log.error("EOD LLM 텔레그램 전송 실패: %s", e, exc_info=True)
+        tg_sent = False
+
+    if tg_sent:
+        _write_last_sent_ny_date(target_ny_date)
+        log.info("EOD LLM 리포트 전송 완료 (NY date=%s)", target_ny_date)
+    else:
+        log.warning("EOD LLM 텔레그램 전송 실패 — 상태 파일 미갱신")
+
+    # 생성 실패 사유는 위에서 daily_eod_report 본문에 포함해 전송한다.
+
+    # DB 로그 저장
+    if phase == "success":
+        save_daily_eod_llm_log(
+            target_ny_date,
+            status="sent" if tg_sent else "telegram_failed",
+            report_text=report,
+            telegram_sent=bool(tg_sent),
+        )
+    elif phase == "upstage":
+        save_daily_eod_llm_log(
+            target_ny_date,
+            status="upstage_error" if tg_sent else "upstage_error_telegram_failed",
+            report_text=report,
+            error=error_msg,
+            phase="upstage",
+            telegram_sent=bool(tg_sent),
+        )
+    elif phase == "general":
+        save_daily_eod_llm_log(
+            target_ny_date,
+            status="general_error" if tg_sent else "general_error_telegram_failed",
+            report_text=report,
+            error=error_msg,
+            phase="general",
+            telegram_sent=bool(tg_sent),
+        )
+    else:  # telegram
+        save_daily_eod_llm_log(
+            target_ny_date,
+            status="telegram_failed",
+            report_text=report,
+            error=error_msg,
+            phase="telegram",
+            telegram_sent=False,
+        )
