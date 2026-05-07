@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytz
 import requests
+from requests import RequestException
 
 from app.core.config import settings
 from app.db.supabase import supabase
@@ -20,6 +21,8 @@ from app.services.balance_service import get_overseas_balance
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_HTTP_TIMEOUT = (5.0, 30.0)  # (connect, read) seconds
 
 
 def has_today_sentiment_data_kst() -> bool:
@@ -136,8 +139,9 @@ class StockRecommendationService:
 
     def generate_technical_recommendations(self):
         """기술적 지표를 기반으로 추천 데이터를 생성하고 Supabase에 저장"""
-        # 최근 6개월 데이터만 가져오기
-        end_date = datetime.now()
+        # 최근 6개월 데이터만 가져오기 (경제·주가 일자 컬럼과 맞추기 위해 KST 달력 기준)
+        kst = pytz.timezone("Asia/Seoul")
+        end_date = datetime.now(kst)
         start_date = end_date - timedelta(days=self.lookback_days)
         start_date_str = start_date.strftime("%Y-%m-%d")
 
@@ -321,20 +325,17 @@ class StockRecommendationService:
             )
             if k and str(k).strip()
         ]
-        if not api_keys and settings.ALPHA_VANTAGE_API_KEY and str(
-            settings.ALPHA_VANTAGE_API_KEY
-        ).strip():
-            api_keys = [settings.ALPHA_VANTAGE_API_KEY.strip()]
 
         if not api_keys:
             return {
-                "message": "Alpha Vantage API 키가 없습니다 (MAIN/SUB_1/SUB_2 또는 ALPHA_VANTAGE_API_KEY)",
+                "message": "Alpha Vantage API 키가 없습니다 (ALPHA_VANTAGE_API_KEY_MAIN / SUB_1 / SUB_2)",
                 "results": [],
             }
 
+        kst = pytz.timezone("Asia/Seoul")
         relevance_threshold = settings.SENTIMENT_RELEVANCE_THRESHOLD
         sleep_interval = 5 if len(api_keys) == 1 else 15
-        yesterday = (datetime.now() - timedelta(days=settings.SENTIMENT_LOOKBACK_DAYS)).strftime("%Y%m%dT0000")
+        yesterday = (datetime.now(kst) - timedelta(days=settings.SENTIMENT_LOOKBACK_DAYS)).strftime("%Y%m%dT0000")
 
         base_url = "https://www.alphavantage.co/query"
 
@@ -347,7 +348,6 @@ class StockRecommendationService:
         holdings_by_ticker = {item.get("ovrs_pdno"): item for item in holdings if item.get("ovrs_pdno")}
 
         # 오늘(KST) 이미 적재되어 있으면 스킵 (일반적 동작)
-        kst = pytz.timezone("Asia/Seoul")
         today_kst = datetime.now(kst).date().isoformat()
         try:
             exists = (
@@ -383,13 +383,41 @@ class StockRecommendationService:
                     "tickers": ticker,
                 }
 
-                response = requests.get(base_url, params=params)
+                try:
+                    response = requests.get(base_url, params=params, timeout=_HTTP_TIMEOUT)
+                except RequestException as re:
+                    with results_lock:
+                        results.append({
+                            "ticker": ticker,
+                            "stock_name": ticker_to_stock.get(ticker, ticker),
+                            "message": f"API 호출 실패: {str(re)}",
+                            "is_recommended": ticker in recommended_tickers,
+                            "is_holding": ticker in holding_tickers,
+                            "recommendation_info": recommendations_by_ticker.get(ticker, {}),
+                            "holding_info": holdings_by_ticker.get(ticker, {})
+                        })
+                    time.sleep(sleep_interval)
+                    continue
+                except Exception as re:
+                    with results_lock:
+                        results.append({
+                            "ticker": ticker,
+                            "stock_name": ticker_to_stock.get(ticker, ticker),
+                            "message": f"API 호출 실패: {str(re)}",
+                            "is_recommended": ticker in recommended_tickers,
+                            "is_holding": ticker in holding_tickers,
+                            "recommendation_info": recommendations_by_ticker.get(ticker, {}),
+                            "holding_info": holdings_by_ticker.get(ticker, {})
+                        })
+                    time.sleep(sleep_interval)
+                    continue
+
                 if response.status_code != 200:
                     with results_lock:
                         results.append({
                             "ticker": ticker,
                             "stock_name": ticker_to_stock.get(ticker, ticker),
-                            "message": "API 호출 실패",
+                            "message": f"API 호출 실패(HTTP {response.status_code})",
                             "is_recommended": ticker in recommended_tickers,
                             "is_holding": ticker in holding_tickers,
                             "recommendation_info": recommendations_by_ticker.get(ticker, {}),

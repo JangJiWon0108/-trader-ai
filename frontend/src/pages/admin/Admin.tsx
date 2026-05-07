@@ -19,6 +19,9 @@ import LogViewerModal from './components/LogViewerModal'
 import TradingInitializeAction from './components/TradingInitializeAction'
 import ManualBuyAction from './components/ManualBuyAction'
 import KisNowQuery from './components/KisNowQuery'
+import EconomicSchedulerControl from './components/EconomicSchedulerControl'
+import AutoBuySchedulerControl from './components/AutoBuySchedulerControl'
+import AutoSellSchedulerControl from './components/AutoSellSchedulerControl'
 
 const grid: CSSProperties = {
   display: 'grid',
@@ -81,7 +84,7 @@ export default function Admin() {
     try {
       const r = await fetchAdminLogs({ lines: logLines })
       setLogsText(r.text || '')
-      setLogsSource((r as any)?.source ?? null)
+      setLogsSource(r.source ?? null)
     } catch (e) {
       setLogsError(e instanceof Error ? e.message : String(e))
       setLogsText(null)
@@ -185,6 +188,18 @@ export default function Admin() {
           <InferenceLoadStatus />
         </Card>
 
+        <Card title="경제/주가 스케줄러" subtitle="경제·주가 일일 갱신 루프 · 서버 상태 조회 / 시작·중지·재시작">
+          <EconomicSchedulerControl />
+        </Card>
+
+        <Card title="자동 매수 스케줄러" subtitle="일일 매수 잡 · 서버 상태 조회 / 시작·중지·재시작">
+          <AutoBuySchedulerControl />
+        </Card>
+
+        <Card title="자동 매도 스케줄러" subtitle="장중 분 단위 점검 · 서버 상태 조회 / 시작·중지·재시작">
+          <AutoSellSchedulerControl />
+        </Card>
+
         <Card title="텔레그램 테스트" subtitle="샘플 메시지 전송">
           <div style={{ marginTop: 8, display: 'grid', gap: 10 }}>
             <div
@@ -284,13 +299,6 @@ export default function Admin() {
           {(logsLoading || logsError) && (
             <div style={{ marginTop: 8, fontSize: 12, color: logsError ? theme.negative : theme.onSurfaceVariant }}>
               {logsError ? `오류: ${logsError}` : '로딩 중…'}
-            </div>
-          )}
-          {logsError && logsError.includes('LOG_TO_FILE') && (
-            <div style={{ marginTop: 8, fontSize: 12, color: theme.onSurfaceVariant, lineHeight: 1.45 }}>
-              현재 서버는 <b>파일 로그</b>가 꺼져있어서(`/admin/logs` 사용 불가) 이 화면에서 로그를 볼 수 없습니다.
-              <br />
-              개발 환경에서는 터미널 출력(uvicorn 로그)을 확인하거나, 필요하면 서버 실행 시 `LOG_TO_FILE=true`를 설정하세요.
             </div>
           )}
         </Card>

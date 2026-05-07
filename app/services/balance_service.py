@@ -13,6 +13,7 @@ from threading import Lock
 
 import pytz
 import requests
+from requests import RequestException
 
 from app.core.config import settings
 from app.db.supabase import supabase
@@ -20,6 +21,10 @@ from app.services.auth_service import parse_expiration_date
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# 외부 API(특히 KIS/알파밴티지 등) 호출이 무한 대기하지 않도록 기본 타임아웃을 둔다.
+# 기존 로직(응답 파싱/에러 처리)은 유지하고, "멈춤"만 방지한다.
+_HTTP_TIMEOUT = (5.0, 30.0)  # (connect, read) seconds
 
 # ─── 상수 정의 (토큰 캐시) ───
 
@@ -108,8 +113,8 @@ def refresh_token_with_retry(record_id=None, max_retries=3):
                 "appsecret": settings.KIS_APPSECRET
             }
             
-            response = requests.post(url, json=data)
-            response_data = response.json()
+            response = requests.post(url, json=data, timeout=_HTTP_TIMEOUT)
+            response_data = response.json() if response.text else {}
             
             if 'access_token' not in response_data:
                 raise Exception(f"토큰 발급 실패: {response_data}")
@@ -176,7 +181,7 @@ def get_domestic_balance():
     max_retries = 2
     for attempt in range(max_retries):
         try:
-            response = requests.get(url, headers=headers, params=params)
+            response = requests.get(url, headers=headers, params=params, timeout=_HTTP_TIMEOUT)
             result = response.json()
             
             # API 응답에 오류가 있고, 재시도 가능한 경우
@@ -230,7 +235,7 @@ def get_overseas_balance(ovrs_excg_cd="NASD"):
     max_retries = 2
     for attempt in range(max_retries):
         try:
-            response = requests.get(url, headers=headers, params=params)
+            response = requests.get(url, headers=headers, params=params, timeout=_HTTP_TIMEOUT)
             result = response.json()
             
             # API 응답에 오류가 있고, 재시도 가능한 경우
@@ -361,7 +366,7 @@ def overseas_order_resv(order_data):
         # 필수 파라미터 설정
         request_body["RVSE_CNCL_DVSN_CD"] = "00"  # 정정취소구분코드 (00: 주문시 필수)
         
-        response = requests.post(url, headers=headers, json=request_body)
+        response = requests.post(url, headers=headers, json=request_body, timeout=_HTTP_TIMEOUT)
         result = response.json()
         
         return result
@@ -403,7 +408,7 @@ def inquire_psamount(params):
             "CTX_AREA_NK100": ""  # 연속조회키100
         }
         
-        response = requests.get(url, headers=headers, params=base_params)
+        response = requests.get(url, headers=headers, params=base_params, timeout=_HTTP_TIMEOUT)
         result = response.json()
         
         return result
@@ -487,7 +492,7 @@ def get_current_price(params):
             "tr_id": "HHDFS00000300",
         }
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=_HTTP_TIMEOUT)
         result = response.json()
         
         return result
@@ -515,7 +520,7 @@ def get_overseas_nccs(params):
             "tr_id": tr_id,
         }
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=_HTTP_TIMEOUT)
         result = response.json()
         
         if settings.KIS_USE_MOCK and 'output' in result and isinstance(result['output'], list):
@@ -561,7 +566,7 @@ def get_overseas_order_detail(params, *, only_unfilled_pending: bool = False):
         logger.info(f"API 요청: {url}")
         logger.info(f"파라미터: {params}")
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=_HTTP_TIMEOUT)
         
         logger.info(f"API 응답 상태 코드: {response.status_code}")
         logger.info(f"API 응답 본문: {response.text[:200] if response.text else '비어있음'}")
@@ -635,7 +640,8 @@ def fetch_overseas_orders_for_period(ord_strt_dt: str, ord_end_dt: str, ovrs_exc
 
 def get_merged_overseas_filled_orders(days: int = 30) -> list[dict]:
     """최근 days 일간 체결(또는 모의: 전체 후 ft_ccld_qty 필터) 주문 행을 거래소별로 합친다."""
-    end = datetime.now()
+    kst = pytz.timezone("Asia/Seoul")
+    end = datetime.now(kst)
     start = end - timedelta(days=max(1, days))
     end_s = end.strftime("%Y%m%d")
     start_s = start.strftime("%Y%m%d")
@@ -711,7 +717,7 @@ def get_overseas_order_resv_list(params):
         logger.info(f"예약주문조회 API 요청: {url}")
         logger.info(f"파라미터: {params}")
         
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers, params=params, timeout=_HTTP_TIMEOUT)
         
         # 응답 확인
         logger.info(f"API 응답 상태 코드: {response.status_code}")
@@ -845,7 +851,7 @@ def order_overseas_stock(order_data):
         logger.info(f"요청 본문: {request_body}")
         
         # API 호출
-        response = requests.post(url, headers=headers, json=request_body)
+        response = requests.post(url, headers=headers, json=request_body, timeout=_HTTP_TIMEOUT)
         
         # 응답 확인
         logger.info(f"API 응답 상태 코드: {response.status_code}")
@@ -934,7 +940,7 @@ def cancel_overseas_order(*, exchange_code: str, ticker: str, orgn_odno: str) ->
             "ORD_QTY": "0",
             "OVRS_ORD_UNPR": "0",
         }
-        resp = requests.post(url, headers=headers, json=body)
+        resp = requests.post(url, headers=headers, json=body, timeout=_HTTP_TIMEOUT)
         try:
             result = resp.json() if resp.text else {"rt_cd": "1", "msg_cd": "EMPTY", "msg1": "응답 본문이 비어 있습니다."}
         except Exception:
@@ -1552,7 +1558,8 @@ def get_holdings_from_db() -> dict:
 def get_order_fills_from_db(days: int = 30) -> list[dict]:
     """Supabase order_fills 테이블 → 체결 내역 리스트 반환."""
     try:
-        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+        kst = pytz.timezone("Asia/Seoul")
+        cutoff = (datetime.now(kst) - timedelta(days=days)).strftime("%Y%m%d")
         resp = (
             supabase.table("order_fills")
             .select("raw")
@@ -1703,7 +1710,8 @@ def sync_open_orders_to_db(days: int = 7) -> bool:
         rows: list[dict] = []
 
         if settings.KIS_USE_MOCK:
-            today = datetime.now()
+            kst = pytz.timezone("Asia/Seoul")
+            today = datetime.now(kst)
             start = (today - timedelta(days=max(1, days))).strftime("%Y%m%d")
             end = today.strftime("%Y%m%d")
             params = {
@@ -1859,6 +1867,7 @@ def reset_trading_state_in_db(*, initial_cash_krw: int, wipe_trade_logs: bool = 
     - 체결(order_fills)
     - 미체결(open_orders)
     - 주문 이력(order_history), 잔고 스냅샷(balance_snapshots)
+    - 대시보드 그래프 스냅샷(equity_snapshots)
 
     경제/추론/감성 테이블은 유지한다.
     """
@@ -1872,6 +1881,7 @@ def reset_trading_state_in_db(*, initial_cash_krw: int, wipe_trade_logs: bool = 
         "open_orders": _delete_all_rows_status("open_orders", "open_key"),
         "order_history": _delete_all_rows_status("order_history", "id"),
         "balance_snapshots": _delete_all_rows_status("balance_snapshots", "id"),
+        "equity_snapshots": _delete_all_rows_status("equity_snapshots", "snapshot_key"),
     }
 
     # 1-1) (선택) 매매 실행 로그도 초기화에 포함
@@ -1920,7 +1930,7 @@ def reset_trading_state_in_db(*, initial_cash_krw: int, wipe_trade_logs: bool = 
                     "usdkrw_best_effort": fx,
                     "usdkrw_source": fx_source,
                 },
-                "synced_at": datetime.now().isoformat(),
+                "synced_at": datetime.now(timezone.utc).isoformat(),
             },
             on_conflict="id",
         ).execute()

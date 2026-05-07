@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
-import Sparkline from '../../components/Sparkline'
 import Tooltip from '../../components/Tooltip'
 import CurrencyToggle from '../../components/CurrencyToggle'
+import EquityChartModal from '../../components/EquityChartModal'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
 import { useCurrency } from '../../contexts/CurrencyContext'
@@ -13,11 +13,17 @@ import {
   fetchCombinedRecommendations,
   fetchOrderFills,
   fetchSchedulerStatus,
+  fetchEquitySnapshots,
+  fetchEconomicLatest,
+  fetchAdminInferenceStatus,
+  fetchSentimentStatus,
+  type EquitySnapshot,
   type KisHolding,
   type OrderFillRow,
   type CombinedRecommendation,
 } from '../../api'
 import { formatKstDateTime } from '../../utils/time'
+import { kstYesterdayYmd } from '../admin/components/statusUtils'
 
 const cell: CSSProperties = {
   padding: '12px 14px',
@@ -47,33 +53,6 @@ function LoadingRow({ cols }: { cols: number }) {
       ))}
     </tr>
   )
-}
-
-function nyTodayYmd() {
-  const t = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date())
-  const [mm, dd, yy] = t.split('/')
-  return `${yy}${mm}${dd}`
-}
-
-/** KIS: 매수 02(외화 지출), 매도 01(외화 입금) — balance_service 주문과 동일 */
-function nyTodayFilledCashflowUsd(rows: OrderFillRow[]): { usd: number; hadAnyTodayFill: boolean } {
-  const today = nyTodayYmd()
-  let usd = 0
-  let hadAnyTodayFill = false
-  for (const row of rows) {
-    if (row.ord_dt !== today) continue
-    hadAnyTodayFill = true
-    const amt = parseFloat(row.ft_ccld_amt3 || '0')
-    if (isNaN(amt)) continue
-    if (row.sll_buy_dvsn_cd === '02') usd -= amt
-    else if (row.sll_buy_dvsn_cd === '01') usd += amt
-  }
-  return { usd, hadAnyTodayFill }
 }
 
 function sortFillsDesc(rows: OrderFillRow[]): OrderFillRow[] {
@@ -146,6 +125,44 @@ function StatusMini({ running, label }: { running: boolean; label: string }) {
   )
 }
 
+function LoadMini({
+  ok,
+  label,
+  loading,
+}: {
+  ok: boolean
+  label: string
+  loading: boolean
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: ok ? theme.positive : theme.onSurfaceVariant,
+          boxShadow: ok ? `0 0 8px ${theme.positive}` : 'none',
+        }}
+      />
+      <span style={{ fontSize: 12, fontWeight: 800, color: theme.onSurfaceVariant }}>{label}</span>
+      <span
+        style={{
+          fontSize: 11,
+          fontWeight: 900,
+          padding: '4px 10px',
+          borderRadius: 999,
+          color: ok ? theme.positive : theme.negative,
+          background: ok ? 'rgba(5,150,105,0.12)' : 'rgba(148,163,184,0.2)',
+          marginLeft: 'auto',
+        }}
+      >
+        {loading ? '확인 중' : ok ? '완료' : '미완료'}
+      </span>
+    </div>
+  )
+}
+
 function scoreOf(r: CombinedRecommendation) {
   return r.composite_score ?? r.rise_probability ?? r.accuracy ?? 0
 }
@@ -182,6 +199,13 @@ export default function Dashboard() {
   const recommendations = useApi(fetchCombinedRecommendations)
   const scheduler = useApi(fetchSchedulerStatus)
   const fills = useApi(() => fetchOrderFills(45))
+  const equity = useApi(() => fetchEquitySnapshots(14))
+  const economicLatest = useApi(fetchEconomicLatest)
+  const inference = useApi(fetchAdminInferenceStatus)
+  const sentiment = useApi(fetchSentimentStatus)
+
+  const [chartOpen, setChartOpen] = useState(false)
+  const [chartMetric, setChartMetric] = useState<'assets' | 'return'>('assets')
 
   const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>({ col: 'pnl', dir: 'desc' })
 
@@ -193,10 +217,6 @@ export default function Dashboard() {
   const totalPnl = holdings.reduce((s, h) => s + linePnlUsd(h), 0)
   const totalPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
   const totalAssets = totalEval + (cashUsd > 0 ? cashUsd : 0)
-
-  const todayCash = useMemo(() => nyTodayFilledCashflowUsd(fills.data?.output ?? []), [fills.data])
-  const todayFlow = todayCash.usd
-  const todayPct = totalAssets > 0 ? (todayFlow / totalAssets) * 100 : 0
 
   const tickers = holdings.map((h) => h.ovrs_pdno).filter(Boolean)
   const winStats = useMemo(() => {
@@ -251,8 +271,6 @@ export default function Dashboard() {
     marginBottom: theme.gutter,
   }
 
-  const sparkPos = totalPct >= 0
-
   const money = (usd: number | string | null | undefined, opts?: { digitsUsd?: number; digitsKrw?: number; sign?: 'auto' | 'always' | 'never' }) =>
     formatMoneyFromUsd(usd, {
       unit: currency.unit,
@@ -264,13 +282,44 @@ export default function Dashboard() {
 
   const labelUnit = currency.unit === 'USD' ? 'USD' : 'KRW'
 
+  const econExpected = kstYesterdayYmd()
+  const econLatest = economicLatest.data?.date ?? null
+  const econOk = Boolean(econLatest && econLatest >= econExpected)
+
+  const infOk = Boolean(inference.data?.inferred_today)
+
+  const sentiOk = Boolean(sentiment.data?.today_loaded)
+
   return (
     <div style={{ padding: theme.pagePadding, fontFamily: theme.fontSans, minHeight: '100%' }}>
       <PageHeader title="대시보드" subtitle="US 시장 · 8개 요약 카드" right={<CurrencyToggle />} />
 
       <div style={cardGrid}>
-        <Card title={<Tooltip tip="보유 평가액 + 주문가능外화(거래소 응답 중 최댓값 추정)">{`총 자산 (${labelUnit})`}</Tooltip>}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+        <Card
+          title={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <Tooltip tip="보유 평가액 + 예수금(주문가능外화 추정)">{`총 자산 (${labelUnit})`}</Tooltip>
+              <button
+                type="button"
+                onClick={() => { setChartMetric('assets'); setChartOpen(true) }}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 999,
+                  border: '1px solid rgba(148, 163, 184, 0.26)',
+                  background: 'rgba(148, 163, 184, 0.12)',
+                  color: theme.onSurface,
+                  fontSize: 12,
+                  fontWeight: 900,
+                  cursor: 'pointer',
+                }}
+                title="총 자산 그래프 보기"
+              >
+                그래프 보기
+              </button>
+            </div>
+          }
+        >
+          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
             <div>
               <div
                 style={{
@@ -284,60 +333,57 @@ export default function Dashboard() {
               >
                 {balance.loading ? '로딩 중…' : money(totalAssets, { digitsUsd: 2, digitsKrw: 0 })}
               </div>
-              <div style={{ marginTop: 6, fontSize: 12, color: theme.onSurfaceVariant, lineHeight: 1.8 }}>
-                <div>주식 평가 {money(totalEval, { digitsUsd: 2, digitsKrw: 0 })}</div>
-                <div>예수금 {cashUsd > 0 ? money(cashUsd, { digitsUsd: 2, digitsKrw: 0 }) : '—'}</div>
+              <div style={{ marginTop: 10, fontSize: 12, color: theme.onSurfaceVariant, lineHeight: 1.85 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                  <span>총자산</span>
+                  <strong style={{ color: theme.onSurface, fontVariantNumeric: 'tabular-nums' }}>
+                    {balance.loading ? '…' : money(totalAssets, { digitsUsd: 2, digitsKrw: 0 })}
+                  </strong>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                  <span>주식 평가</span>
+                  <span style={{ color: theme.onSurface, fontVariantNumeric: 'tabular-nums' }}>
+                    {balance.loading ? '…' : money(totalEval, { digitsUsd: 2, digitsKrw: 0 })}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+                  <span>예수금</span>
+                  <span style={{ color: theme.onSurface, fontVariantNumeric: 'tabular-nums' }}>
+                    {balance.loading ? '…' : cashUsd > 0 ? money(cashUsd, { digitsUsd: 2, digitsKrw: 0 }) : '—'}
+                  </span>
+                </div>
               </div>
             </div>
-            <Sparkline points={[0.42, 0.45, 0.48, 0.5, 0.52, 0.55, 0.58]} positive={sparkPos} />
           </div>
         </Card>
 
         <Card
           title={
-            <Tooltip tip="뉴욕 거래일 기준 당일 체결된 매수·매도의 외화 순현금(매수는 지출·매도는 입금). 전일 종가 대비 평가 변동이나 매입 대비 누적 손익과는 다릅니다.">
-              {`당일 체결 현금 (${labelUnit}/%)`}
-            </Tooltip>
-          }
-          subtitle="장중 평가 손익 아님 · 미체결 제외"
-        >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
-            <div>
-              <div
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <Tooltip tip="보유 종목의 매입(증권사 매입합계, 비어 있으면 평단×수량) 대비 평가금액(현재가×수량) 손익률입니다.">
+                총 수익률 (%)
+              </Tooltip>
+              <button
+                type="button"
+                onClick={() => { setChartMetric('return'); setChartOpen(true) }}
                 style={{
-                  fontSize: 24,
-                  fontWeight: 800,
-                  fontVariantNumeric: 'tabular-nums',
-                  color: todayFlow >= 0 ? theme.positive : theme.negative,
-                  fontFamily: theme.fontDisplay,
+                  padding: '6px 10px',
+                  borderRadius: 999,
+                  border: '1px solid rgba(148, 163, 184, 0.26)',
+                  background: 'rgba(148, 163, 184, 0.12)',
+                  color: theme.onSurface,
+                  fontSize: 12,
+                  fontWeight: 900,
+                  cursor: 'pointer',
                 }}
+                title="총 수익률 그래프 보기"
               >
-                {fills.loading ? '로딩 중…' : money(todayFlow, { digitsUsd: 2, digitsKrw: 0, sign: 'auto' })}
-              </div>
-              <div style={{ marginTop: 8, fontSize: 13, fontWeight: 700, color: todayPct >= 0 ? theme.positive : theme.negative }}>
-                {fills.loading
-                  ? '…'
-                  : !todayCash.hadAnyTodayFill
-                    ? (
-                        <span style={{ fontWeight: 600, color: theme.onSurfaceVariant }}>
-                          뉴욕일 당일 체결 없음
-                        </span>
-                      )
-                    : fmtPct(todayPct)}
-              </div>
+                그래프 보기
+              </button>
             </div>
-            <Sparkline points={[0.55, 0.52, 0.58, 0.6, 0.57, 0.62, 0.65]} positive={todayFlow >= 0} />
-          </div>
-        </Card>
-
-        <Card
-          title={
-            <Tooltip tip="보유 종목의 매입(증권사 매입합계, 비어 있으면 평단×수량) 대비 평가금액(현재가×수량) 손익률입니다.">
-              총 수익률 (%)
-            </Tooltip>
           }
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
             <div>
               <div
                 style={{
@@ -354,35 +400,7 @@ export default function Dashboard() {
                 평가손익 {money(totalPnl, { digitsUsd: 2, digitsKrw: 0, sign: 'auto' })}
               </div>
             </div>
-            <Sparkline points={[0.5, 0.52, 0.51, 0.54, 0.56, 0.55, 0.58]} positive={sparkPos} />
           </div>
-        </Card>
-
-        <Card
-          title={<Tooltip tip="자동매매 스케줄러 상태와 다음 매수(KST)·장중 매도 점검(뉴욕)까지 남은 시간">자동매매 + 다음 매매</Tooltip>}
-        >
-          {scheduler.loading && <div style={{ color: theme.onSurfaceVariant }}>로딩 중…</div>}
-          {scheduler.error && <div style={{ color: theme.negative }}>{scheduler.error}</div>}
-          {!scheduler.loading && !scheduler.error && scheduler.data && (
-            <>
-              <StatusMini running={scheduler.data.buy_running} label="매수 스케줄" />
-              <StatusMini running={scheduler.data.sell_running} label="매도 스케줄" />
-              <div style={{ fontSize: 12, color: theme.onSurfaceVariant, marginTop: 4, lineHeight: 1.5 }}>
-                <div>
-                  <strong style={{ color: theme.onSurface }}>다음 매수</strong>{' '}
-                  {scheduler.data.buy_running
-                    ? `(${scheduler.data.schedule_buy_time_kst ?? ''} KST 매일) ${formatCountdown(buyCd)}`
-                    : `예정 ${formatKstDateTime(scheduler.data.next_auto_buy_at)} · 정지 중`}
-                </div>
-                <div style={{ marginTop: 4 }}>
-                  <strong style={{ color: theme.onSurface }}>다음 매도 점검</strong>{' '}
-                  {scheduler.data.sell_running
-                    ? `${scheduler.data.schedule_sell_interval_min ?? 1}분 간격 · ${formatCountdown(sellCd)}`
-                    : '정지 중 (장중에만 동작)'}
-                </div>
-              </div>
-            </>
-          )}
         </Card>
 
         <Card title={<Tooltip tip="나스닥·NYSE·AMEX 합산 보유 종목">보유 종목 수 + 티커</Tooltip>}>
@@ -502,6 +520,49 @@ export default function Dashboard() {
             </ul>
           )}
         </Card>
+
+        <Card
+          title={<Tooltip tip="관리자 화면의 적재 현황과 동일 기준으로 표시합니다.">데이터 적재 현황</Tooltip>}
+          subtitle="경제 데이터 · 모델 추론 · 알파밴티지 감성"
+        >
+          <LoadMini label="경제 데이터 적재" ok={econOk} loading={economicLatest.loading} />
+          <LoadMini label="추론 적재" ok={infOk} loading={inference.loading} />
+          <LoadMini label="알파밴티지 적재" ok={sentiOk} loading={sentiment.loading} />
+          {(economicLatest.error || inference.error || sentiment.error) && (
+            <div style={{ marginTop: 6, fontSize: 12, color: theme.negative, lineHeight: 1.4 }}>
+              {(economicLatest.error && `경제: ${economicLatest.error}`) ||
+                (inference.error && `추론: ${inference.error}`) ||
+                (sentiment.error && `알파밴티지: ${sentiment.error}`)}
+            </div>
+          )}
+        </Card>
+
+        <Card
+          title={<Tooltip tip="자동매매 스케줄러 상태와 다음 매수(KST)·장중 매도 점검(뉴욕)까지 남은 시간">자동매매 + 다음 매매</Tooltip>}
+        >
+          {scheduler.loading && <div style={{ color: theme.onSurfaceVariant }}>로딩 중…</div>}
+          {scheduler.error && <div style={{ color: theme.negative }}>{scheduler.error}</div>}
+          {!scheduler.loading && !scheduler.error && scheduler.data && (
+            <>
+              <StatusMini running={scheduler.data.buy_running} label="매수 스케줄" />
+              <StatusMini running={scheduler.data.sell_running} label="매도 스케줄" />
+              <div style={{ fontSize: 12, color: theme.onSurfaceVariant, marginTop: 4, lineHeight: 1.5 }}>
+                <div>
+                  <strong style={{ color: theme.onSurface }}>다음 매수</strong>{' '}
+                  {scheduler.data.buy_running
+                    ? `(${scheduler.data.schedule_buy_time_kst ?? ''} KST 매일) ${formatCountdown(buyCd)}`
+                    : `예정 ${formatKstDateTime(scheduler.data.next_auto_buy_at)} · 정지 중`}
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  <strong style={{ color: theme.onSurface }}>다음 매도 점검</strong>{' '}
+                  {scheduler.data.sell_running
+                    ? `${scheduler.data.schedule_sell_interval_min ?? 1}분 간격 · ${formatCountdown(sellCd)}`
+                    : '정지 중 (장중에만 동작)'}
+                </div>
+              </div>
+            </>
+          )}
+        </Card>
       </div>
 
       <Card title="보유 종목 상세" subtitle="해외주식 잔고 · 나스닥/NYSE/AMEX">
@@ -574,6 +635,15 @@ export default function Dashboard() {
           </table>
         </div>
       </Card>
+
+      <EquityChartModal
+        open={chartOpen}
+        title={chartMetric === 'assets' ? '총 자산 그래프' : '총 수익률 그래프'}
+        metric={chartMetric}
+        items={(equity.data?.items ?? []) as EquitySnapshot[]}
+        loading={equity.loading}
+        onClose={() => setChartOpen(false)}
+      />
     </div>
   )
 }

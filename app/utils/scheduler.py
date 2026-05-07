@@ -37,14 +37,32 @@ from app.services.balance_service import (
 )
 from app.services.economic_service import update_economic_data_in_background
 from app.services.stock_recommendation_service import StockRecommendationService
+from app.services.equity_snapshot_service import save_equity_snapshot_if_due, snapshot_key_for_now
 
 # ─── 로깅 ───
 
 logger = get_logger("stock_scheduler")
 
-# schedule 모듈의 전역 job 큐는 스레드 안전하지 않다. 주식 스케줄러 스레드와 경제 스케줄러 스레드가
+# schedule 모듈의 전역 job 큐는 스레드 안전하지 않다. 주식 스케줄러 스레드와 경제/주가 스케줄러 스레드가
 # 동시에 run_pending()을 호출하면 동일 잡(예: 매도)이 같은 시각에 두 번 실행될 수 있다.
 _schedule_run_lock = threading.Lock()
+
+# 정규장 1시간 스냅샷 중복 저장 방지(프로세스 메모리)
+_last_equity_snapshot_key: str | None = None
+
+
+def _run_equity_snapshot_hourly_market() -> None:
+    """정규장(ET) 1시간 간격으로 총자산/총수익률 스냅샷 저장(best-effort)."""
+    global _last_equity_snapshot_key
+    try:
+        key = snapshot_key_for_now()
+        if _last_equity_snapshot_key == key:
+            return
+        r = save_equity_snapshot_if_due()
+        if r.get("attempted") and r.get("saved"):
+            _last_equity_snapshot_key = str(r.get("snapshot_key") or key)
+    except Exception:
+        logger.warning("equity_snapshot 잡 예외(무시)", exc_info=True)
 
 
 def _persist_auto_sell_summary(summary: dict | None) -> None:
@@ -129,6 +147,9 @@ class StockScheduler:
         
         # 한국 시간 기준 SCHEDULE_AUTO_BUY_TIME (KST, HH:MM)에 매수 작업 실행
         schedule.every().day.at(settings.SCHEDULE_AUTO_BUY_TIME).do(self._run_auto_buy)
+
+        # 미국 정규장(ET) 1시간 스냅샷: 매 분 체크 후 "정각 + 30분"일 때만 저장
+        schedule.every(1).minutes.do(_run_equity_snapshot_hourly_market)
         
         # 별도 스레드에서 스케줄러 실행
         self.running = True
@@ -789,7 +810,7 @@ def ensure_eod_llm_report_daily_job_scheduled() -> None:
     hhmm = (settings.SCHEDULE_EOD_LLM_REPORT_TIME_KST or "07:00").strip()
     schedule.every().day.at(hhmm).do(_run_eod_llm_report_daily)
     _eod_llm_report_daily_registered = True
-    logger.info("EOD LLM 일일 리포트 잡 등록 (매일 KST %s, Supabase 분 로그 필터 → Gemini)", hhmm)
+    logger.info("EOD LLM 일일 리포트 잡 등록 (매일 KST %s, Supabase 분 로그 필터 → Upstage)", hhmm)
 
 
 def start_scheduler():
@@ -901,7 +922,7 @@ def get_all_schedules_overview() -> dict:
             "running": sell_running,
             "interval_min": int(settings.SCHEDULE_AUTO_SELL_INTERVAL_MIN),
             "next_check_at_utc": next_sell_at,
-            "note": "장중에만 점검 실행(장외면 next_check_at_utc=None)",
+            "note": "장중에만 점검 실행",
         },
         "eod_llm_report": {
             "enabled": bool(settings.SCHEDULE_EOD_LLM_REPORT_ENABLED),
@@ -949,9 +970,9 @@ def _run_economic_data_update(telegram_source: str = "경제스케줄"):
         ):
             elog.info("신규 저장 행 %s건 → 모델 추론 및 predicted_stocks / stock_analysis_results 갱신", updated)
             try:
-                from predict_model.predict.run_inference import run_inference_and_save_to_db
+                from app.services.ml_inference_client import trigger_inference
 
-                inf = run_inference_and_save_to_db()
+                inf = trigger_inference()
                 elog.info("추론·DB 갱신 완료: %s", inf)
                 inf_tg_sent = notify_telegram_inference_success(inf, source=f"{telegram_source}_추론")
                 save_daily_inference_log(inf or {}, telegram_sent=inf_tg_sent)
@@ -1099,6 +1120,6 @@ def run_economic_data_update_now():
 
 def run_inference_now():
     """경제 갱신 없이 즉시 추론·예측 DB만 갱신 (테스트용)"""
-    from predict_model.predict.run_inference import run_inference_and_save_to_db
+    from app.services.ml_inference_client import trigger_inference
 
-    return run_inference_and_save_to_db()
+    return trigger_inference()

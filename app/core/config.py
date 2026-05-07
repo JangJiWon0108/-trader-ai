@@ -1,7 +1,7 @@
 """
 애플리케이션 설정 (Pydantic Settings).
 
-.env 로드 후 KIS·Supabase·스케줄·매매 임계값·텔레그램·Gemini 등 런타임 상수를 한곳에서 제공한다.
+.env 로드 후 KIS·Supabase·스케줄·매매 임계값·텔레그램·Upstage 등 런타임 상수를 한곳에서 제공한다.
 `settings` 싱글톤이 라우트·서비스에서 임포트된다.
 """
 
@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     PREDICT_MODEL_DIR: str = Field(
         ...,
         description="Transformer 추론 모델 디렉터리",
+    )
+
+    ML_SERVICE_URL: str = Field(
+        "",
+        description="Cloud Run ML 서비스(trader-ai-ml) 베이스 URL. 비우면 로컬 프로세스에서 run_inference 직접 실행",
+    )
+    ML_SERVICE_AUTH_TOKEN: str = Field(
+        "",
+        description="ML 서비스 호출 인증(선택). ML 컨테이너 ML_INFERENCE_AUTH_TOKEN 과 동일 값",
     )
 
     # 한국투자증권 — 모의투자 전용 (.env 의 KIS_MOCK_* 만 사용)
@@ -153,50 +162,14 @@ class Settings(BaseSettings):
         description="Upstage API 키",
     )
 
-    # ── (호환용) Gemini LLM (기존 설정 유지, 미사용 가능) ─────────────────────
-    GEMINI_MODEL_ID: str = Field(
-        "",
-        description="(호환용) Generative Language API generateContent 모델 ID",
-    )
-    GEMINI_API_KEY: str = Field(
-        "",
-        description="(호환용) Google AI / Gemini API 키",
-    )
-
-    # ── LLM 기반 주식 분석(stock_analysis_results) ──────────────────────────
-    STOCK_ANALYSIS_USE_LLM: bool = Field(
-        ...,
-        description="True면 추론 파이프라인에서 Recommendation/Analysis를 LLM으로 생성(실패 시 규칙 fallback)",
-    )
-    STOCK_ANALYSIS_UPSTAGE_MODEL_ID: str = Field(
-        "",
-        description="주식 추천/분석(Recommendation/Analysis) 생성에 사용할 Upstage 모델 ID (비우면 UPSTAGE_MODEL_ID 사용)",
-    )
-    STOCK_ANALYSIS_GEMINI_MODEL_ID: str = Field(
-        "",
-        description="(호환용) 주식 추천/분석 생성에 사용할 Gemini 모델 ID",
-    )
-    STOCK_ANALYSIS_LLM_TIMEOUT_SEC: float = Field(
-        ...,
-        description="LLM 호출 타임아웃(초) — stock_analysis_results 생성용",
-    )
-    STOCK_ANALYSIS_LLM_MAX_STOCKS: int = Field(
-        ...,
-        description="LLM으로 한 번에 분석할 최대 종목 수(과다 토큰 방지). 50 종목이면 60이면 충분.",
-    )
-
     EOD_LLM_UPSTAGE_MODEL_ID: str = Field(
         "",
         description="일일 마감 요약 리포트 생성에 사용할 Upstage 모델 ID (비우면 UPSTAGE_MODEL_ID 사용)",
     )
-    EOD_LLM_GEMINI_MODEL_ID: str = Field(
-        "",
-        description="(호환용) 일일 마감 요약 리포트 생성에 사용할 Gemini 모델 ID",
-    )
 
     SCHEDULE_EOD_LLM_REPORT_ENABLED: bool = Field(
         ...,
-        description="Gemini 일일 마감 리포트를 텔레그램으로 보낼지 여부",
+        description="Upstage 일일 마감 리포트를 텔레그램으로 보낼지 여부",
     )
     SCHEDULE_EOD_LLM_REPORT_TIME_KST: str = Field(
         ...,
@@ -208,8 +181,6 @@ class Settings(BaseSettings):
     ALPHA_VANTAGE_API_KEY_MAIN: str = Field(..., description="Alpha Vantage API 키(main)")
     ALPHA_VANTAGE_API_KEY_SUB_1: str = Field(..., description="Alpha Vantage API 키(sub1)")
     ALPHA_VANTAGE_API_KEY_SUB_2: str = Field(..., description="Alpha Vantage API 키(sub2)")
-    # real 레포 호환: 단일 키만 있을 때 (위 세 변수가 비어 있으면 사용)
-    ALPHA_VANTAGE_API_KEY: str = Field(..., description="Alpha Vantage 단일 API 키(호환용)")
 
     @property
     def KIS_APPKEY(self) -> str:

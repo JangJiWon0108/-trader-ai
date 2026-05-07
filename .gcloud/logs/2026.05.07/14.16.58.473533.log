@@ -1,0 +1,106 @@
+2026-05-07 14:16:58,475 DEBUG    root            Loaded Command Group: ['gcloud', 'artifacts']
+2026-05-07 14:16:58,477 DEBUG    root            Loaded Command Group: ['gcloud', 'artifacts', 'repositories']
+2026-05-07 14:16:58,717 DEBUG    root            Loaded Command Group: ['gcloud', 'artifacts', 'repositories', 'create']
+2026-05-07 14:16:58,732 DEBUG    root            Running [gcloud.artifacts.repositories.create] with arguments: [--description: "trader-ai containers", --location: "us-central1", --project: "apt-bonbon-494101-b5", --repository-format: "docker", REPOSITORY: "trader-ai"]
+2026-05-07 14:16:58,735 DEBUG    root            On GCE from memory cache: False
+2026-05-07 14:16:58,743 DEBUG    root            On GCE from memory cache: False
+2026-05-07 14:16:58,745 DEBUG    root            (gcloud.artifacts.repositories.create) You do not currently have an active account selected.
+Please run:
+
+  $ gcloud auth login
+
+to obtain new credentials.
+
+If you have already logged in with a different account, run:
+
+  $ gcloud config set account ACCOUNT
+
+to select an already authenticated account to use.
+Traceback (most recent call last):
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/cli.py", line 957, in Execute
+    resources = calliope_command.Run(cli=self, args=args)
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/backend.py", line 968, in Run
+    resources = command_instance.Run(args)
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/command_lib/util/apis/yaml_command_translator.py", line 998, in Run
+    ref, response = self._CommonRun(method_resource_arg, args)
+                    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/command_lib/util/apis/yaml_command_translator.py", line 504, in _CommonRun
+    response = _CallMethod(
+        method,
+    ...<3 lines>...
+        limit=self.arg_generator.Limit(args),
+        page_size=self.arg_generator.PageSize(args))
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/command_lib/util/apis/yaml_command_translator.py", line 173, in _CallMethod
+    return method.Call(
+           ~~~~~~~~~~~^
+        request, location=location, limit=limit, page_size=page_size
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/command_lib/util/apis/registry.py", line 346, in Call
+    client = apis.GetClientInstance(
+        self.collection.api_name,
+        self.collection.api_version,
+        location=location
+    )
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/api_lib/util/apis.py", line 279, in GetClientInstance
+    return apis_internal._GetClientInstance(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        api_name,
+        ^^^^^^^^^
+    ...<5 lines>...
+        region=regional.LocationToRegion(location) if location else None,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/api_lib/util/apis_internal.py", line 175, in _GetClientInstance
+    http_client = transports.GetApitoolsTransport(
+        response_encoding=transport.ENCODING,
+        timeout=http_timeout_sec if http_timeout_sec else 'unset')
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/core/credentials/transports.py", line 69, in GetApitoolsTransport
+    session = requests.GetSession(
+        timeout=timeout,
+    ...<4 lines>...
+        redact_request_body_reason=redact_request_body_reason,
+    )
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/core/credentials/requests.py", line 81, in GetSession
+    credentials = store.LoadIfEnabled(
+        allow_account_impersonation
+    )
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/core/credentials/store.py", line 601, in LoadIfEnabled
+    return Load(
+        allow_account_impersonation=allow_account_impersonation)
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/core/credentials/store.py", line 825, in Load
+    cred = _Load(
+        account,
+    ...<2 lines>...
+        cache_only_rapt=cache_only_rapt,
+    )
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/core/credentials/store.py", line 961, in _Load
+    raise creds_exceptions.NoActiveAccountException(
+        named_configs.ActiveConfig(False).file_path)
+googlecloudsdk.core.credentials.exceptions.NoActiveAccountException: You do not currently have an active account selected.
+Please run:
+
+  $ gcloud auth login
+
+to obtain new credentials.
+
+If you have already logged in with a different account, run:
+
+  $ gcloud config set account ACCOUNT
+
+to select an already authenticated account to use.
+2026-05-07 14:16:58,750 ERROR    root            (gcloud.artifacts.repositories.create) You do not currently have an active account selected.
+Please run:
+
+  $ gcloud auth login
+
+to obtain new credentials.
+
+If you have already logged in with a different account, run:
+
+  $ gcloud config set account ACCOUNT
+
+to select an already authenticated account to use.
+2026-05-07 14:16:58,763 DEBUG    root            Metrics reporting process started...

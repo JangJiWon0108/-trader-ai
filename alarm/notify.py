@@ -311,7 +311,6 @@ def notify_telegram_inference_success(inf: dict | None, *, source: str) -> bool:
         "prediction_rows": inf.get("prediction_rows"),
         "analysis_rows": inf.get("analysis_rows"),
         "write_db": inf.get("write_db"),
-        "llm_layer": inf.get("llm_layer"),
         "analysis_records": inf.get("analysis_records") or [],
     }
     body = "\n".join(

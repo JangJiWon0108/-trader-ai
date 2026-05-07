@@ -48,5 +48,5 @@ htmlcov/
 *.swo
 .DS_Store
 
-# Kubernetes manifests (local)
-k8s/
+# Kubernetes manifests (local, repo root only — frontend/k8s 는 별도)
+/k8s/

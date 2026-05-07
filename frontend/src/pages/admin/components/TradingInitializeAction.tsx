@@ -37,7 +37,7 @@ export default function TradingInitializeAction() {
 
     // 1) DB 테이블별 삭제 결과
     lines.push('[DB 삭제]')
-    const keys = ['holdings', 'holdings_summary', 'order_fills', 'open_orders', 'order_history', 'balance_snapshots']
+    const keys = ['holdings', 'holdings_summary', 'order_fills', 'open_orders', 'order_history', 'balance_snapshots', 'equity_snapshots']
     for (const k of keys) {
       const st = del?.[k]
       const ok = Boolean(st?.ok)

@@ -1,3 +1,4 @@
+# Backend API only — UI는 frontend/Dockerfile
 FROM python:3.13-slim
 
 WORKDIR /app
@@ -20,8 +21,10 @@ RUN apt-get update \
 
 COPY pyproject.toml uv.lock ./
 
+# 런타임(API·추론)만: [dependency-groups] dev(노트북 등) 제외 → 이미지 슬림
 RUN python -m pip install --no-cache-dir uv \
-    && uv sync --frozen --no-dev
+    && UV_CACHE_DIR=/tmp/uv-cache uv sync --frozen --no-dev \
+    && rm -rf /tmp/uv-cache /root/.cache/uv
 
 COPY . .
 

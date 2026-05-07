@@ -1,5 +1,5 @@
 """
-일일 마감 LLM 리포트 (Gemini → 텔레그램).
+일일 마감 LLM 리포트 (Upstage → 텔레그램).
 
 - 5분 폴링 없음: `SCHEDULE_EOD_LLM_REPORT_TIME_KST` 에 **하루 1회**만 실행 (전역 schedule, KST).
 - 입력: Supabase `scheduler_minute_logs` 중 **의미 있는** auto_sell 분 로그 + 잔고·분석·경제 스냅샷.
@@ -206,11 +206,7 @@ def run_eod_llm_report_daily() -> None:
         prompt = _build_prompt(target_ny_date, ctx)
         report = get_llm_answer(
             prompt,
-            model_id=(
-                (getattr(settings, "EOD_LLM_UPSTAGE_MODEL_ID", "") or "").strip()
-                or (getattr(settings, "EOD_LLM_GEMINI_MODEL_ID", "") or "").strip()
-                or None
-            ),
+            model_id=(getattr(settings, "EOD_LLM_UPSTAGE_MODEL_ID", "") or "").strip() or None,
         )
     except UpstageApiError as e:
         phase = "upstage"

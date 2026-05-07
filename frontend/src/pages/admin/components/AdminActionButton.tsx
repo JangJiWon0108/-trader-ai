@@ -11,7 +11,7 @@ export default function AdminActionButton({
 }: {
   title: string
   subtitle?: string
-  tone?: 'neutral' | 'danger' | 'success'
+  tone?: 'neutral' | 'danger' | 'success' | 'warning'
   onClick: () => void
   right?: ReactNode
   disabled?: boolean
@@ -21,14 +21,18 @@ export default function AdminActionButton({
       ? 'rgba(239, 68, 68, 0.35)'
       : tone === 'success'
         ? 'rgba(16, 185, 129, 0.28)'
-        : theme.outline
+        : tone === 'warning'
+          ? 'rgba(245, 158, 11, 0.42)'
+          : theme.outline
 
   const bg =
     tone === 'danger'
       ? 'linear-gradient(180deg, rgba(239, 68, 68, 0.14) 0%, rgba(255, 255, 255, 0.04) 100%)'
       : tone === 'success'
         ? 'linear-gradient(180deg, rgba(16, 185, 129, 0.12) 0%, rgba(255, 255, 255, 0.04) 100%)'
-        : 'linear-gradient(180deg, rgba(79, 70, 229, 0.10) 0%, rgba(255, 255, 255, 0.04) 100%)'
+        : tone === 'warning'
+          ? 'linear-gradient(180deg, rgba(245, 158, 11, 0.14) 0%, rgba(255, 255, 255, 0.04) 100%)'
+          : 'linear-gradient(180deg, rgba(79, 70, 229, 0.10) 0%, rgba(255, 255, 255, 0.04) 100%)'
 
   const btn: CSSProperties = {
     width: '100%',

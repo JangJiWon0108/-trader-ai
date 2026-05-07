@@ -11,19 +11,24 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
+import uuid
 
 # `uv run python app/main.py` 처럼 파일을 직접 실행할 때도
 # `from app...` 임포트가 되도록 프로젝트 루트를 sys.path 에 추가한다.
 if __name__ == "__main__" and (__package__ is None or __package__ == ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.utils.logger import get_logger
+from app.utils.logger import get_logger, harmonize_uvicorn_fastapi_loggers
 import traceback
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from alarm.notify import notify_telegram_economic_update, notify_telegram_inference_skipped
 from app.api.api import api_router
@@ -75,9 +80,84 @@ app.add_middleware(
 app.include_router(api_router)
 
 
+class _RequestIdMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next) -> Response:
+        rid = (request.headers.get("x-request-id") or "").strip() or uuid.uuid4().hex
+        request.state.request_id = rid
+        response: Response = await call_next(request)
+        try:
+            response.headers["x-request-id"] = rid
+        except Exception:
+            pass
+        return response
+
+
+app.add_middleware(_RequestIdMiddleware)
+
+
+def _req_id(request: Request) -> str:
+    try:
+        rid = getattr(request.state, "request_id", None)
+        if isinstance(rid, str) and rid.strip():
+            return rid.strip()
+    except Exception:
+        pass
+    return uuid.uuid4().hex
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exception_handler(request: Request, exc: RequestValidationError):
+    rid = _req_id(request)
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "request_id": rid},
+        headers={"x-request-id": rid},
+    )
+
+
+@app.exception_handler(HTTPException)
+async def _http_exception_handler(request: Request, exc: HTTPException):
+    """
+    HTTPException 응답에도 request_id/x-request-id를 통일적으로 포함한다.
+    (기본 FastAPI 핸들러는 request_id를 모르므로, 운영/프론트 장애 추적이 어려움)
+    """
+    rid = _req_id(request)
+    return JSONResponse(
+        status_code=int(exc.status_code),
+        content={"detail": exc.detail, "request_id": rid},
+        headers={"x-request-id": rid},
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    """
+    최후의 안전망.
+
+    - 프론트는 `detail`/`message`를 파싱하므로, 반드시 `detail`을 포함한다.
+    - 기존 성공 응답/라우터 로직은 변경하지 않는다.
+    """
+    rid = _req_id(request)
+    logger.exception("Unhandled exception (request_id=%s, path=%s): %s", rid, request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": f"서버 내부 오류가 발생했습니다. (request_id={rid})",
+            "request_id": rid,
+        },
+        headers={"x-request-id": rid},
+    )
+
+
 @app.get("/")
 def read_root():
     return {"message": "주식 분석 및 추천 API에 오신 것을 환영합니다"}
+
+
+@app.get("/healthz")
+def healthz():
+    """Kubernetes liveness/readiness 용 — DB·외부 API 없이 가볍게."""
+    return {"status": "ok"}
 
 
 # ─── 기동 로직 ───
@@ -89,6 +169,8 @@ async def startup():
     추가 동작:
     - 서버 기동 직후 1회: 경제/주가 데이터 수집 → (신규 행 있으면) 추론 → 자동 매수 1회 실행
     """
+    # uvicorn 기본 logging dictConfig 이후에도 access/error가 루트·링버퍼로 오도록 재맞춤
+    harmonize_uvicorn_fastapi_loggers()
     logger.info("서비스 시작 시 경제 데이터 수집 즉시 실행")
     try:
         result = await update_economic_data_in_background()
@@ -170,9 +252,22 @@ async def startup():
 if __name__ == "__main__":
     import os
 
+    from uvicorn.config import LOG_LEVELS
+
     host = (os.getenv("BACKEND_HOST") or os.getenv("HOST") or "0.0.0.0").strip()
     port = int(os.getenv("BACKEND_PORT") or os.getenv("PORT") or "8000")
     reload_flag = (os.getenv("BACKEND_RELOAD") or os.getenv("RELOAD") or "true").strip().lower()
     reload_enabled = reload_flag in ("1", "true", "yes", "y", "on")
 
-    uvicorn.run("app.main:app", host=host, port=port, reload=reload_enabled)
+    _lvl = (os.getenv("LOG_LEVEL") or "info").strip().lower()
+    if _lvl not in LOG_LEVELS:
+        _lvl = "info"
+
+    uvicorn.run(
+        "app.main:app",
+        host=host,
+        port=port,
+        reload=reload_enabled,
+        log_level=_lvl,
+        log_config=None,
+    )

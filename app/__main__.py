@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 
 import uvicorn
+from uvicorn.config import LOG_LEVELS
 
 
 def main() -> None:
@@ -20,11 +21,17 @@ def main() -> None:
     reload_flag = (os.getenv("BACKEND_RELOAD") or os.getenv("RELOAD") or "true").strip().lower()
     reload_enabled = reload_flag in ("1", "true", "yes", "y", "on")
 
+    _lvl = (os.getenv("LOG_LEVEL") or "info").strip().lower()
+    if _lvl not in LOG_LEVELS:
+        _lvl = "info"
+
     uvicorn.run(
         "app.main:app",
         host=host,
         port=port,
         reload=reload_enabled,
+        log_level=_lvl,
+        log_config=None,
     )
 
 

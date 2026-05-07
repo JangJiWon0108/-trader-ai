@@ -7,7 +7,8 @@ type UsMarketStatus = {
   regularHoursLabel: string
   isRegularOpen: boolean
   stateLabel: string
-  hint: string
+  hintPrefix: string
+  hintDuration: string
 }
 
 const NY_TZ = 'America/New_York'
@@ -21,7 +22,10 @@ function formatDuration(ms: number) {
   const total = Math.max(0, Math.floor(ms / 1000))
   const h = Math.floor(total / 3600)
   const m = Math.floor((total % 3600) / 60)
-  return h > 0 ? `${h}시간 ${m}분` : `${m}분`
+  const s = total % 60
+  if (h > 0) return `${h}시간 ${m}분 ${s}초`
+  if (m > 0) return `${m}분 ${s}초`
+  return `${s}초`
 }
 
 type ZonedParts = {
@@ -109,11 +113,14 @@ function computeUsMarketStatus(now: Date): UsMarketStatus {
 
   const isRegularOpen = isWeekday && nowUtc >= openUtc && nowUtc < closeUtc
 
-  let hint = ''
+  let hintPrefix = ''
+  let hintDuration = ''
   if (isRegularOpen) {
-    hint = `마감까지 ${formatDuration(closeUtc - nowUtc)}`
+    hintPrefix = '마감까지'
+    hintDuration = formatDuration(closeUtc - nowUtc)
   } else if (isWeekday && nowUtc < openUtc) {
-    hint = `개장까지 ${formatDuration(openUtc - nowUtc)}`
+    hintPrefix = '개장까지'
+    hintDuration = formatDuration(openUtc - nowUtc)
   } else {
     // 다음 개장(대략: 다음 평일 09:30) — 휴장일(공휴일)은 미반영
     // NY 캘린더 날짜를 UTC 기준으로 하루씩 증가시키며 평일 찾기
@@ -123,7 +130,8 @@ function computeUsMarketStatus(now: Date): UsMarketStatus {
       const probe = getZonedParts(NY_TZ, d)
       if (['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].includes(probe.weekdayShort)) {
         const nextOpenUtc = zonedTimeToUtcMs(probe, 9, 30, 0)
-        hint = `다음 개장까지 ${formatDuration(nextOpenUtc - nowUtc)}`
+        hintPrefix = '다음 개장까지'
+        hintDuration = formatDuration(nextOpenUtc - nowUtc)
         break
       }
     } while (true)
@@ -138,7 +146,8 @@ function computeUsMarketStatus(now: Date): UsMarketStatus {
     regularHoursLabel,
     isRegularOpen,
     stateLabel,
-    hint,
+    hintPrefix,
+    hintDuration,
   }
 }
 
@@ -188,7 +197,21 @@ export default function MarketStatusCard() {
             </div>
             <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.35 }}>
               <div style={{ whiteSpace: 'normal', wordBreak: 'keep-all' }}>{status.regularHoursLabel}</div>
-              <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{status.hint}</div>
+              <div style={{ marginTop: 4 }}>
+                <div style={{ wordBreak: 'keep-all' }}>{status.hintPrefix}</div>
+                <div
+                  style={{
+                    marginTop: 2,
+                    fontWeight: 700,
+                    color: '#cbd5e1',
+                    fontVariantNumeric: 'tabular-nums',
+                    wordBreak: 'keep-all',
+                    whiteSpace: 'normal',
+                  }}
+                >
+                  {status.hintDuration}
+                </div>
+              </div>
             </div>
           </div>
         </div>

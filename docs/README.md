@@ -191,7 +191,7 @@ flowchart TD
 
 - **경제 데이터 수집**: `SCHEDULE_ECONOMIC_UPDATE_TIME` = `22:00` (KST)
 - **자동 매수**: `SCHEDULE_AUTO_BUY_TIME` = `23:00` (KST)
-- **자동 매도 체크**: `SCHEDULE_AUTO_SELL_INTERVAL_MIN` = `1` (분) — 단, 코드는 **미국 장중에만** 의미 있는 처리를 수행
+- **자동 매도 체크**: `SCHEDULE_AUTO_SELL_INTERVAL_MIN` = `3` (분) — 단, 코드는 **미국 장중에만** 의미 있는 처리를 수행
 - **EOD LLM 리포트**: `SCHEDULE_EOD_LLM_REPORT_TIME_KST` = `07:00` (KST)
 - **추론/감성**:
   - 추론은 “고정 시각”이 아니라, **경제 데이터 수집 후 신규 행이 있을 때** `SCHEDULE_AFTER_ECONOMIC_RUN_INFERENCE=true`이면 뒤따라 실행된다.

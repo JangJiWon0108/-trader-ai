@@ -7,7 +7,6 @@ const menus = [
   { path: '/', label: '대시보드', icon: '⊞' },
   { path: '/portfolio', label: '포트폴리오 / 잔고', icon: '◈' },
   { path: '/recommendations', label: 'AI 추천 종목', icon: '✦' },
-  { path: '/auto-trading', label: '자동매매 현황', icon: '⟳' },
   { path: '/orders', label: '주문 내역', icon: '≡' },
   { path: '/economic', label: '경제 지표', icon: '◉' },
   { path: '/alpha-advantage', label: '알파 어드밴티지', icon: 'α' },

@@ -1,4 +1,4 @@
-const BASE = '/api'
+const BASE = (import.meta.env.VITE_API_BASE as string | undefined) || '/api'
 
 async function parseErrorMessage(res: Response) {
   try {
@@ -18,6 +18,13 @@ async function parseErrorMessage(res: Response) {
   }
 }
 
+function extractRequestId(res: Response, parsedJsonLike?: any): string | null {
+  const hdr = (res.headers.get('x-request-id') || '').trim()
+  if (hdr) return hdr
+  const bodyRid = typeof parsedJsonLike?.request_id === 'string' ? parsedJsonLike.request_id.trim() : ''
+  return bodyRid || null
+}
+
 function withTimeout(timeoutMs?: number) {
   const controller = new AbortController()
   const t = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : null
@@ -26,33 +33,49 @@ function withTimeout(timeoutMs?: number) {
 
 async function get<T>(path: string, opts?: { timeoutMs?: number }): Promise<T> {
   const to = withTimeout(opts?.timeoutMs)
-  const res = await fetch(`${BASE}${path}`, { signal: to.controller.signal })
-  if (!res.ok) {
-    const msg = await parseErrorMessage(res)
+  try {
+    const res = await fetch(`${BASE}${path}`, { signal: to.controller.signal })
+    if (!res.ok) {
+      // parseErrorMessage 내부에서 res.json()을 소비하므로, request_id 추출은 header 위주로 한다.
+      const msg = await parseErrorMessage(res)
+      const rid = extractRequestId(res)
+      const suffix = rid ? ` (request_id=${rid})` : ''
+      throw new Error(msg ? `${res.status} ${res.statusText} · ${msg}${suffix}` : `${res.status} ${res.statusText}${suffix}`)
+    }
+    const data = (await res.json()) as T
+    return data
+  } catch (e: any) {
+    // AbortError(타임아웃) 등은 사용자에게 조금 더 명확히 보여준다.
+    if (e?.name === 'AbortError') throw new Error('요청 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.')
+    throw e
+  } finally {
     to.clear()
-    throw new Error(msg ? `${res.status} ${res.statusText} · ${msg}` : `${res.status} ${res.statusText}`)
   }
-  const data = (await res.json()) as T
-  to.clear()
-  return data
 }
 
 async function post<T>(path: string, body?: unknown, opts?: { timeoutMs?: number }): Promise<T> {
   const to = withTimeout(opts?.timeoutMs)
-  const res = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: to.controller.signal,
-  })
-  if (!res.ok) {
-    const msg = await parseErrorMessage(res)
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: to.controller.signal,
+    })
+    if (!res.ok) {
+      const msg = await parseErrorMessage(res)
+      const rid = extractRequestId(res)
+      const suffix = rid ? ` (request_id=${rid})` : ''
+      throw new Error(msg ? `${res.status} ${res.statusText} · ${msg}${suffix}` : `${res.status} ${res.statusText}${suffix}`)
+    }
+    const data = (await res.json()) as T
+    return data
+  } catch (e: any) {
+    if (e?.name === 'AbortError') throw new Error('요청 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.')
+    throw e
+  } finally {
     to.clear()
-    throw new Error(msg ? `${res.status} ${res.statusText} · ${msg}` : `${res.status} ${res.statusText}`)
   }
-  const data = (await res.json()) as T
-  to.clear()
-  return data
 }
 
 // ── Balance ────────────────────────────────────────────────────────
@@ -342,6 +365,8 @@ export interface AdminLogs {
   total_lines: number
   text: string
   source?: 'file' | 'memory' | 'none'
+  /** 서버 루트 로거에 적용된 최소 레벨(예: INFO면 DEBUG 행은 링버퍼에 없음) */
+  log_level?: string
 }
 
 export const fetchAdminLogs = (opts?: { lines?: number; file?: string; source?: 'auto' | 'file' | 'memory' }) => {
@@ -387,6 +412,46 @@ export const triggerAdminEconomicUpdate = () =>
 
 export const pingAdminKis = () =>
   get<{ ok: boolean; rt_cd: string | null; msg1: string | null; use_mock: boolean }>('/admin/kis/ping')
+
+/** `get_all_schedules_overview()` 응답과 동형 */
+export interface AdminSchedulesOverview {
+  economic_update: {
+    running: boolean
+    time_kst: string
+    after_run_inference: boolean
+    next_run_at_kst: string
+  }
+  model_inference: { enabled: boolean; trigger: string }
+  auto_buy: { running: boolean; time_kst: string; next_run_at_kst: string }
+  auto_sell: {
+    running: boolean
+    interval_min: number
+    next_check_at_utc: string | null
+    note: string
+  }
+  eod_llm_report: { enabled: boolean; time_kst: string; next_run_at_kst: string }
+}
+
+export interface AdminSchedulersStatusResponse {
+  ok: boolean
+  schedules: AdminSchedulesOverview
+  kis_use_mock: boolean
+}
+
+export const fetchAdminSchedulersStatus = () =>
+  get<AdminSchedulersStatusResponse>('/admin/schedulers/status')
+
+export interface AdminSchedulerActionResponse {
+  ok: boolean
+  scheduler: string
+  action: string
+  message: string
+  schedules: AdminSchedulesOverview
+  kis_use_mock: boolean
+}
+
+export const postAdminSchedulerAction = (scheduler: 'economic' | 'auto_buy' | 'auto_sell', action: 'start' | 'stop' | 'restart') =>
+  post<AdminSchedulerActionResponse>(`/admin/schedulers/${scheduler}/${action}`, undefined)
 
 export interface AdminInferenceHistoryRow {
   /** 경제/주가 데이터 기준일 (predicted_stocks 최신 날짜) */
@@ -531,3 +596,28 @@ export const initializeMockTrading = () => post<unknown>('/balance/initialize')
 
 // ── Trading initialize (admin, DB only) ────────────────────────────
 export const initializeDbOnly = () => post<unknown>('/balance/initialize-db-only')
+
+// ── Metrics (Equity snapshots) ─────────────────────────────────────
+export interface EquitySnapshot {
+  snapshot_key: string
+  ts_utc: string
+  ts_ny: string
+  ny_trading_date: string
+  stock_value_usd: number
+  cash_usd: number
+  total_assets_usd: number
+  total_cost_usd: number
+  total_pnl_usd: number
+  total_return_pct: number
+  source?: string | null
+}
+
+export interface EquitySnapshotsResponse {
+  ok: boolean
+  days: number
+  count: number
+  items: EquitySnapshot[]
+}
+
+export const fetchEquitySnapshots = (days = 7) =>
+  get<EquitySnapshotsResponse>(`/metrics/equity?days=${days}`)

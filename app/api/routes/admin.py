@@ -22,12 +22,18 @@ from fastapi import APIRouter, HTTPException, Query
 from alarm.telegram import send_telegram_long_text, send_telegram_message_detailed
 from app.core.config import settings
 from app.db.supabase import supabase
-from app.utils.logger import get_logger, tail_memory_logs
+from app.utils.logger import get_logger, root_effective_level_name, tail_memory_logs
 from app.utils.scheduler import (
     get_all_schedules_overview,
     run_economic_data_update_now,
     run_inference_now,
-  run_manual_buy_now,
+    run_manual_buy_now,
+    start_economic_data_scheduler,
+    start_scheduler,
+    start_sell_scheduler,
+    stop_economic_data_scheduler,
+    stop_scheduler,
+    stop_sell_scheduler,
 )
 
 logger = get_logger(__name__)
@@ -175,6 +181,7 @@ def admin_logs(
                 "total_lines": len(all_lines),
                 "text": "\n".join(tail),
                 "source": "file",
+                "log_level": root_effective_level_name(),
             }
 
         # 2) 메모리 링버퍼 tail (K8s stdout 기본 환경 대응)
@@ -187,6 +194,7 @@ def admin_logs(
                 "total_lines": len(mem_lines),
                 "text": mem_text,
                 "source": "memory",
+                "log_level": root_effective_level_name(),
             }
 
         # 3) 둘 다 비어 있으면 안내
@@ -527,4 +535,87 @@ def admin_kis_ping():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"kis ping 실패: {str(e)}")
+
+
+_SCHEDULER_NAMES = frozenset({"economic", "auto_buy", "auto_sell"})
+_SCHEDULER_ACTIONS = frozenset({"start", "stop", "restart"})
+
+
+@router.get("/schedulers/status", summary="백그라운드 스케줄 루프 상태(경제·매수·매도 등)")
+def admin_schedulers_status():
+    try:
+        return {
+            "ok": True,
+            "schedules": get_all_schedules_overview(),
+            "kis_use_mock": bool(settings.KIS_USE_MOCK),
+        }
+    except Exception as e:
+        logger.exception("schedulers/status 실패: %s", e)
+        raise HTTPException(status_code=500, detail=f"schedulers/status 실패: {str(e)}")
+
+
+@router.post(
+    "/schedulers/{scheduler_name}/{action}",
+    summary="스케줄러 시작·중지·재시작 (economic | auto_buy | auto_sell)",
+)
+def admin_scheduler_control(scheduler_name: str, action: str):
+    name = (scheduler_name or "").strip().lower()
+    act = (action or "").strip().lower()
+    if name not in _SCHEDULER_NAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 스케줄러입니다: {scheduler_name!r} (economic|auto_buy|auto_sell)",
+        )
+    if act not in _SCHEDULER_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 동작입니다: {action!r} (start|stop|restart)",
+        )
+
+    steps: list[str] = []
+
+    def _append_stop_start(stop_fn, start_fn, stop_label: str, start_label: str) -> None:
+        if act in ("stop", "restart"):
+            stopped = bool(stop_fn())
+            steps.append(f"{stop_label}: {'완료' if stopped else '이미 중지'}")
+        if act in ("start", "restart"):
+            started = bool(start_fn())
+            steps.append(f"{start_label}: {'완료' if started else '이미 실행 중'}")
+
+    try:
+        if name == "economic":
+            _append_stop_start(
+                stop_economic_data_scheduler,
+                start_economic_data_scheduler,
+                "경제/주가 스케줄 중지",
+                "경제/주가 스케줄 시작",
+            )
+        elif name == "auto_buy":
+            _append_stop_start(
+                stop_scheduler,
+                start_scheduler,
+                "자동 매수 중지",
+                "자동 매수 시작",
+            )
+        elif name == "auto_sell":
+            _append_stop_start(
+                stop_sell_scheduler,
+                start_sell_scheduler,
+                "자동 매도 중지",
+                "자동 매도 시작",
+            )
+
+        return {
+            "ok": True,
+            "scheduler": name,
+            "action": act,
+            "message": " · ".join(steps) if steps else act,
+            "schedules": get_all_schedules_overview(),
+            "kis_use_mock": bool(settings.KIS_USE_MOCK),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("schedulers/%s/%s 실패: %s", name, act, e)
+        raise HTTPException(status_code=500, detail=f"스케줄러 제어 실패: {str(e)}")
 

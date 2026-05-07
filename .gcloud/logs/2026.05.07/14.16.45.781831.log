@@ -1,0 +1,127 @@
+2026-05-07 14:16:45,784 DEBUG    root            Loaded Command Group: ['gcloud', 'artifacts']
+2026-05-07 14:16:45,789 DEBUG    root            Loaded Command Group: ['gcloud', 'artifacts', 'repositories']
+2026-05-07 14:16:46,104 DEBUG    root            Loaded Command Group: ['gcloud', 'artifacts', 'repositories', 'describe']
+2026-05-07 14:16:46,118 DEBUG    root            On GCE from memory cache: False
+2026-05-07 14:16:46,119 DEBUG    root            Running [gcloud.artifacts.repositories.describe] with arguments: [--location: "us-central1", REPOSITORY: "trader-ai"]
+2026-05-07 14:16:46,122 DEBUG    root            (gcloud.artifacts.repositories.describe) Error parsing [repository].
+The [repository] resource is not properly specified.
+Failed to find attribute [project]. The attribute can be set in the following ways: 
+- provide the argument `repository` on the command line with a fully specified name
+- provide the argument `--project` on the command line
+- set the property `core/project`
+Traceback (most recent call last):
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/concepts/concepts.py", line 428, in Initialize
+    return self._resources.Parse(
+           ~~~~~~~~~~~~~~~~~~~~~^
+        deps_lib.Get(
+        ^^^^^^^^^^^^^
+    ...<2 lines>...
+        params=params,
+        ^^^^^^^^^^^^^^
+        api_version=self._collection_info.api_version)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/core/resources.py", line 1214, in Parse
+    return self.ParseResourceId(collection, line, params or {},
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                api_version=api_version,
+                                ^^^^^^^^^^^^^^^^^^^^^^^^
+                                validate=validate,
+                                ^^^^^^^^^^^^^^^^^^
+                                default_resolver=default_resolver)
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/core/resources.py", line 970, in ParseResourceId
+    return parser.ParseResourceId(resource_id, kwargs, base_url, subcollection,
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                                  validate=validate,
+                                  ^^^^^^^^^^^^^^^^^^
+                                  default_resolver=default_resolver)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/core/resources.py", line 311, in ParseResourceId
+    param_values[param] = resolver() if callable(resolver) else resolver
+                          ~~~~~~~~^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/concepts/concepts.py", line 421, in <lambda>
+    return lambda: deps_lib.Get(name, fallthroughs_map, parsed_args)
+                   ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/concepts/deps.py", line 353, in Get
+    return GetFromFallthroughs(
+        fallthroughs, parsed_args, attribute_name=attribute_name)
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/concepts/deps.py", line 386, in GetFromFallthroughs
+    raise AttributeNotFoundError(
+    ...<3 lines>...
+            fallthroughs_summary))
+googlecloudsdk.calliope.concepts.deps.AttributeNotFoundError: Failed to find attribute [project]. The attribute can be set in the following ways: 
+- provide the argument `repository` on the command line with a fully specified name
+- provide the argument `--project` on the command line
+- set the property `core/project`
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/concepts/handlers.py", line 87, in Parse
+    return self.parse(self.arg_getter())
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/command_lib/util/concepts/info_holders.py", line 394, in Parse
+    result = self.concept_spec.Parse(self.attribute_to_args_map,
+                                     self.fallthroughs_map,
+                                     parsed_args=parsed_args,
+                                     plural=self.plural,
+                                     allow_empty=self.allow_empty)
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/concepts/concepts.py", line 468, in Parse
+    return self._ParseFromValue(
+           ~~~~~~~~~~~~~~~~~~~~^
+        attribute_to_args_map, base_fallthroughs_map, parsed_args,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        allow_empty=allow_empty)
+        ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/concepts/concepts.py", line 549, in _ParseFromValue
+    return self.Initialize(
+           ~~~~~~~~~~~~~~~^
+        fallthroughs_map, parsed_args=parsed_args)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/concepts/concepts.py", line 435, in Initialize
+    raise InitializationError(
+        'The [{}] resource is not properly specified.\n'
+        '{}'.format(self.name, str(e)))
+googlecloudsdk.calliope.concepts.concepts.InitializationError: The [repository] resource is not properly specified.
+Failed to find attribute [project]. The attribute can be set in the following ways: 
+- provide the argument `repository` on the command line with a fully specified name
+- provide the argument `--project` on the command line
+- set the property `core/project`
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/cli.py", line 957, in Execute
+    resources = calliope_command.Run(cli=self, args=args)
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/backend.py", line 968, in Run
+    resources = command_instance.Run(args)
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/command_lib/util/apis/yaml_command_translator.py", line 856, in Run
+    unused_ref, response = self._CommonRun(
+                           ~~~~~~~~~~~~~~~^
+        method_resource_arg, args
+        ^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/command_lib/util/apis/yaml_command_translator.py", line 468, in _CommonRun
+    ref = method_resource_arg.Parse(args)
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/command_lib/util/apis/arg_marshalling.py", line 275, in Parse
+    return self.primary_resource.ParseResourceArg(namespace)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/command_lib/util/apis/yaml_arg_schema.py", line 1313, in ParseResourceArg
+    return result and result.Parse()
+                      ~~~~~~~~~~~~^^
+  File "/Users/n-jwjang/google-cloud-sdk/lib/googlecloudsdk/calliope/concepts/handlers.py", line 90, in Parse
+    raise ParseError(name, six.text_type(e))
+googlecloudsdk.calliope.concepts.handlers.ParseError: Error parsing [repository].
+The [repository] resource is not properly specified.
+Failed to find attribute [project]. The attribute can be set in the following ways: 
+- provide the argument `repository` on the command line with a fully specified name
+- provide the argument `--project` on the command line
+- set the property `core/project`
+2026-05-07 14:16:46,135 ERROR    root            (gcloud.artifacts.repositories.describe) Error parsing [repository].
+The [repository] resource is not properly specified.
+Failed to find attribute [project]. The attribute can be set in the following ways: 
+- provide the argument `repository` on the command line with a fully specified name
+- provide the argument `--project` on the command line
+- set the property `core/project`
+2026-05-07 14:16:46,151 DEBUG    root            Metrics reporting process started...
