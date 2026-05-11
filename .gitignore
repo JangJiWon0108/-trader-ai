@@ -49,6 +49,7 @@ htmlcov/
 *.swp
 *.swo
 .DS_Store
+.cursor_uvicorn.log
 
 # Kubernetes manifests (local, repo root only — frontend/k8s 는 별도)
 /k8s/
