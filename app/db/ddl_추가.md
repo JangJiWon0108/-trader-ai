@@ -102,6 +102,10 @@ add column if not exists created_at timestamptz not null default now();
 create index if not exists idx_stock_recommendations_created_at
 on public.stock_recommendations using btree (created_at);
 
+-- E) equity_snapshots: 시드 기준 수익률 컬럼 추가
+alter table public.equity_snapshots
+add column if not exists seed_return_pct numeric null;
+
 -- D) 경제/주가 원천 데이터(wide 테이블): 기준일(날짜)과 별개로 "이 행이 DB에 언제 적재/갱신됐는지" 기록
 -- - 운영/디버깅 시 "데이터가 최신 적재 되었나?"를 테이블 자체에서 바로 확인 가능
 alter table public.economic_and_stock_data

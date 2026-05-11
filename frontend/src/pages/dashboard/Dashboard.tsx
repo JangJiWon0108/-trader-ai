@@ -11,7 +11,7 @@ import { formatMoneyFromUsd } from '../../utils/money'
 import {
   fetchAllBalances,
   fetchCombinedRecommendations,
-  fetchOrderFills,
+  fetchOrderHistory,
   fetchSchedulerStatus,
   fetchEquitySnapshots,
   fetchEconomicLatest,
@@ -19,7 +19,7 @@ import {
   fetchSentimentStatus,
   type EquitySnapshot,
   type KisHolding,
-  type OrderFillRow,
+  type OrderHistoryItem,
   type CombinedRecommendation,
 } from '../../api'
 import { formatKstDateTime } from '../../utils/time'
@@ -55,12 +55,8 @@ function LoadingRow({ cols }: { cols: number }) {
   )
 }
 
-function sortFillsDesc(rows: OrderFillRow[]): OrderFillRow[] {
-  return [...rows].sort((a, b) => {
-    const ka = `${a.ord_dt ?? ''}${a.ord_tmd ?? ''}`
-    const kb = `${b.ord_dt ?? ''}${b.ord_tmd ?? ''}`
-    return kb.localeCompare(ka)
-  })
+function sortOrderHistoryDesc(rows: OrderHistoryItem[]): OrderHistoryItem[] {
+  return [...rows].sort((a, b) => (b.kst_at ?? '').localeCompare(a.kst_at ?? ''))
 }
 
 function useCountdownMs(targetIso: string | null | undefined) {
@@ -198,14 +194,14 @@ export default function Dashboard() {
   const balance = useApi(fetchAllBalances)
   const recommendations = useApi(fetchCombinedRecommendations)
   const scheduler = useApi(fetchSchedulerStatus)
-  const fills = useApi(() => fetchOrderFills(45))
+  const orderHistory = useApi(fetchOrderHistory)
   const equity = useApi(() => fetchEquitySnapshots(14))
   const economicLatest = useApi(fetchEconomicLatest)
   const inference = useApi(fetchAdminInferenceStatus)
   const sentiment = useApi(fetchSentimentStatus)
 
   const [chartOpen, setChartOpen] = useState(false)
-  const [chartMetric, setChartMetric] = useState<'assets' | 'return'>('assets')
+  const [chartMetric, setChartMetric] = useState<'assets' | 'return' | 'seed_return'>('assets')
 
   const [sort, setSort] = useState<{ col: SortCol; dir: 'asc' | 'desc' }>({ col: 'pnl', dir: 'desc' })
 
@@ -242,7 +238,10 @@ export default function Dashboard() {
       .slice(0, 4)
   }, [recommendations.data])
 
-  const fillRows = useMemo(() => sortFillsDesc(fills.data?.output ?? []).slice(0, 12), [fills.data])
+  const fillRows = useMemo(
+    () => sortOrderHistoryDesc(orderHistory.data?.items ?? []).slice(0, 12),
+    [orderHistory.data],
+  )
 
   const sortedHoldings = useMemo(() => {
     const getVal = (h: KisHolding): number | string => {
@@ -415,7 +414,28 @@ export default function Dashboard() {
           </div>
         </Card>
 
-        <Card title={<Tooltip tip="KIS 초기 시드(psamount 기준) 대비 현재 총 자산(보유주식+현금) 수익률">시드 기준 수익률 (%)</Tooltip>}>
+        <Card title={
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <Tooltip tip="KIS 초기 시드(psamount 기준) 대비 현재 총 자산(보유주식+현금) 수익률">시드 기준 수익률 (%)</Tooltip>
+            <button
+              type="button"
+              onClick={() => { setChartMetric('seed_return'); setChartOpen(true) }}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                border: '1px solid rgba(148, 163, 184, 0.26)',
+                background: 'rgba(148, 163, 184, 0.12)',
+                color: theme.onSurface,
+                fontSize: 12,
+                fontWeight: 900,
+                cursor: 'pointer',
+              }}
+              title="시드 기준 수익률 그래프 보기"
+            >
+              그래프 보기
+            </button>
+          </div>
+        }>
           <div style={{ display: 'flex', alignItems: 'flex-end' }}>
             <div>
               <div
@@ -530,18 +550,19 @@ export default function Dashboard() {
           )}
         </Card>
 
-        <Card title={<Tooltip tip="최근 체결된 주문(매수/매도)">최근 체결 피드</Tooltip>}>
-          {fills.loading && <div style={{ color: theme.onSurfaceVariant }}>로딩 중…</div>}
-          {fills.error && <div style={{ color: theme.negative }}>{fills.error}</div>}
-          {!fills.loading && !fills.error && (
+        <Card title={<Tooltip tip="최근 매수/매도 주문 내역">최근 주문 내역</Tooltip>}>
+          {orderHistory.loading && <div style={{ color: theme.onSurfaceVariant }}>로딩 중…</div>}
+          {orderHistory.error && <div style={{ color: theme.negative }}>{orderHistory.error}</div>}
+          {!orderHistory.loading && !orderHistory.error && (
             <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: 160, overflow: 'auto' }}>
-              {fillRows.length === 0 && <li style={{ fontSize: 13, color: theme.onSurfaceVariant }}>체결 내역 없음</li>}
-              {fillRows.map((row, i) => {
-                const side = row.sll_buy_dvsn_cd === '02' ? '매수' : row.sll_buy_dvsn_cd === '01' ? '매도' : row.sll_buy_dvsn_cd_name || '—'
-                const c = row.sll_buy_dvsn_cd === '02' ? theme.positive : theme.negative
+              {fillRows.length === 0 && <li style={{ fontSize: 13, color: theme.onSurfaceVariant }}>주문 내역 없음</li>}
+              {fillRows.map((row) => {
+                const isBuy = String(row.side).toLowerCase().includes('buy') || String(row.side).includes('매수')
+                const sideLabel = isBuy ? '매수' : '매도'
+                const c = isBuy ? theme.positive : theme.negative
                 return (
                   <li
-                    key={`${row.odno ?? i}-${row.ord_dt}-${row.pdno}`}
+                    key={row.id}
                     style={{
                       padding: '8px 0',
                       borderBottom: `1px solid ${theme.surfaceContainer}`,
@@ -550,14 +571,17 @@ export default function Dashboard() {
                     }}
                   >
                     <span style={{ color: theme.onSurfaceVariant, marginRight: 8 }}>
-                      {row.ord_dt} {row.ord_tmd}
+                      {formatKstDateTime(row.kst_at)}
                     </span>
-                    <span style={{ fontWeight: 800, color: c }}>{side}</span>{' '}
-                    <span style={{ fontWeight: 700 }}>{row.pdno}</span>
+                    <span style={{ fontWeight: 800, color: c }}>{sideLabel}</span>{' '}
+                    <span style={{ fontWeight: 700 }}>{row.ticker}</span>
                     <span style={{ color: theme.onSurfaceVariant }}>
                       {' '}
-                      {row.ft_ccld_qty}주 @ {money(row.ft_ccld_unpr3, { digitsUsd: 2, digitsKrw: 0 })}
+                      {row.quantity ?? '—'}주 @ {money(row.limit_price, { digitsUsd: 2, digitsKrw: 0 })}
                     </span>
+                    {row.success === false && (
+                      <span style={{ marginLeft: 6, fontSize: 11, color: theme.negative, fontWeight: 700 }}>실패</span>
+                    )}
                   </li>
                 )
               })}
@@ -600,7 +624,9 @@ export default function Dashboard() {
                 <div style={{ marginTop: 4 }}>
                   <strong style={{ color: theme.onSurface }}>다음 매도 점검</strong>{' '}
                   {scheduler.data.sell_running
-                    ? `${scheduler.data.schedule_sell_interval_min ?? 1}분 간격 · ${formatCountdown(sellCd)}`
+                    ? scheduler.data.next_sell_check_at
+                      ? `${scheduler.data.schedule_sell_interval_min ?? 1}분 간격 · ${formatCountdown(sellCd)}`
+                      : '장외 대기 중 (장 개장 시 재개)'
                     : '정지 중 (장중에만 동작)'}
                 </div>
               </div>
@@ -682,7 +708,7 @@ export default function Dashboard() {
 
       <EquityChartModal
         open={chartOpen}
-        title={chartMetric === 'assets' ? '총 자산 그래프' : '총 수익률 그래프'}
+        title={chartMetric === 'assets' ? '총 자산 그래프' : chartMetric === 'seed_return' ? '시드 기준 수익률 그래프' : '총 수익률 그래프'}
         metric={chartMetric}
         items={(equity.data?.items ?? []) as EquitySnapshot[]}
         loading={equity.loading}

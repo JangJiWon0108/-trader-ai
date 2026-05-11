@@ -141,6 +141,37 @@ def save_daily_eod_llm_log(
 
 # ── 주문 단건 이력 ─────────────────────────────────────────────────────────────
 
+def _compute_portfolio_snapshot() -> tuple[float | None, float | None]:
+    """DB 스냅샷 기준 (holdings_return_pct, seed_return_pct). 오류 시 (None, None)."""
+    try:
+        db = _db()
+        h_resp = db.table("holdings").select("raw").execute()
+        s_resp = db.table("holdings_summary").select("cash_usd, initial_cash_usd").eq("id", "main").execute()
+        holdings = [r["raw"] for r in (h_resp.data or []) if r.get("raw")]
+        summary = (s_resp.data or [{}])[0]
+        cash_usd = float(summary.get("cash_usd") or 0)
+        seed_raw = summary.get("initial_cash_usd")
+        seed_usd = float(seed_raw) if seed_raw is not None else None
+
+        total_cost = 0.0
+        total_eval = 0.0
+        for h in holdings:
+            qty = float(h.get("ovrs_cblc_qty") or 0)
+            buy_amt = float(h.get("frcr_buy_amt_smtl1") or 0)
+            if buy_amt <= 0:
+                buy_amt = qty * float(h.get("pchs_avg_pric") or 0)
+            eval_amt = qty * float(h.get("now_pric2") or 0)
+            total_cost += buy_amt
+            total_eval += eval_amt
+
+        holdings_return_pct = round((total_eval - total_cost) / total_cost * 100, 4) if total_cost > 0 else None
+        total_assets = total_eval + cash_usd
+        seed_return_pct = round((total_assets - seed_usd) / seed_usd * 100, 4) if seed_usd and seed_usd > 0 else None
+        return holdings_return_pct, seed_return_pct
+    except Exception:
+        return None, None
+
+
 def save_order(
     *,
     side: str,
@@ -157,6 +188,7 @@ def save_order(
     payload: dict | None = None,
     ny_trading_date: str | None = None,
 ) -> None:
+    holdings_return_pct, seed_return_pct = _compute_portfolio_snapshot()
     row: dict[str, Any] = {
         "kst_at": _now_kst_iso(),
         "ny_trading_date": ny_trading_date or _ny_date(),
@@ -172,6 +204,8 @@ def save_order(
         "success": success,
         "source": source,
         "payload": payload,
+        "snapshot_holdings_return_pct": holdings_return_pct,
+        "snapshot_seed_return_pct": seed_return_pct,
     }
     try:
         _db().table("order_history").insert(row).execute()

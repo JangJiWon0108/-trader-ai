@@ -1426,11 +1426,13 @@ def sync_holdings_to_db() -> bool:
         cash_usd = 0.0
         output2_best: dict = {}
 
+        got_valid_response = False
         for exchange in exchanges:
             try:
                 result = get_overseas_balance(exchange)
                 if result.get("rt_cd") != "0":
                     continue
+                got_valid_response = True
                 for h in result.get("output1", []):
                     ticker = (h.get("ovrs_pdno") or "").strip()
                     if not ticker or ticker in seen:
@@ -1461,12 +1463,13 @@ def sync_holdings_to_db() -> bool:
         if rows:
             supabase.table("holdings").upsert(rows, on_conflict="ticker").execute()
 
-        # 더 이상 보유하지 않는 종목 삭제
-        existing = supabase.table("holdings").select("ticker").execute()
-        current_tickers = {r["ticker"] for r in rows}
-        stale = [r["ticker"] for r in (existing.data or []) if r["ticker"] not in current_tickers]
-        if stale:
-            supabase.table("holdings").delete().in_("ticker", stale).execute()
+        # KIS에서 유효한 응답을 받은 경우에만 stale 삭제 (전 거래소 실패 시 DB 보존)
+        if got_valid_response:
+            existing = supabase.table("holdings").select("ticker").execute()
+            current_tickers = {r["ticker"] for r in rows}
+            stale = [r["ticker"] for r in (existing.data or []) if r["ticker"] not in current_tickers]
+            if stale:
+                supabase.table("holdings").delete().in_("ticker", stale).execute()
 
         # 현금/요약 동기화
         #

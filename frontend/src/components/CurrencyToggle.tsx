@@ -46,8 +46,8 @@ export default function CurrencyToggle({ size = 'md' }: { size?: 'sm' | 'md' }) 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
       <div style={{ display: 'flex', gap: 6, padding: size === 'sm' ? 4 : 6, borderRadius: 999, background: 'rgba(148,163,184,0.12)', border: `1px solid ${theme.outlineSoft}` }}>
-        <PillBtn active={unit === 'USD'} label="USD" onClick={() => set('USD')} />
         <PillBtn active={unit === 'KRW'} label="KRW" onClick={() => set('KRW')} />
+        <PillBtn active={unit === 'USD'} label="USD" onClick={() => set('USD')} />
       </div>
       {help && <span style={{ fontSize: 11, fontWeight: 700, color: theme.onSurfaceVariant }}>{help}</span>}
     </div>

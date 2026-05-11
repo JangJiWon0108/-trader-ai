@@ -231,6 +231,8 @@ export interface OrderHistoryItem {
   success: boolean | null
   source: string | null
   payload: any | null
+  snapshot_holdings_return_pct: number | null
+  snapshot_seed_return_pct: number | null
 }
 
 export interface OrderHistoryResponse {
@@ -611,6 +613,7 @@ export interface EquitySnapshot {
   total_cost_usd: number
   total_pnl_usd: number
   total_return_pct: number
+  seed_return_pct?: number | null
   source?: string | null
 }
 

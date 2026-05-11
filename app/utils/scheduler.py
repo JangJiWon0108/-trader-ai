@@ -34,6 +34,7 @@ from app.services.balance_service import (
     sync_order_fills_to_db,
     sync_open_orders_to_db,
     sync_cash_usd_to_db,
+    _get_cash_usd_via_psamount_best_effort,
 )
 from app.services.economic_service import update_economic_data_in_background
 from app.services.stock_recommendation_service import StockRecommendationService
@@ -52,12 +53,22 @@ _last_equity_snapshot_key: str | None = None
 
 
 def _run_equity_snapshot_hourly_market() -> None:
-    """정규장(ET) 1시간 간격으로 총자산/총수익률 스냅샷 저장(best-effort)."""
+    """정규장(ET) 10분 간격으로 KIS→DB 동기화 후 스냅샷 저장(best-effort)."""
     global _last_equity_snapshot_key
     try:
         key = snapshot_key_for_now()
         if _last_equity_snapshot_key == key:
             return
+        # 10분 단위 스냅샷은 DB가 최신이어야 의미가 있어, 스냅샷 직전에 KIS→DB 동기화를 best-effort로 수행한다.
+        # 실패해도 스냅샷 저장 함수가 예외를 삼키도록 되어 있어, 전체 스케줄은 계속 돈다.
+        try:
+            sync_holdings_to_db()
+        except Exception:
+            logger.warning("equity_snapshot 전 holdings 동기화 실패(무시)", exc_info=True)
+        try:
+            sync_cash_usd_to_db(ovrs_excg_cd="NASD")
+        except Exception:
+            logger.warning("equity_snapshot 전 cash 동기화 실패(무시)", exc_info=True)
         r = save_equity_snapshot_if_due()
         if r.get("attempted") and r.get("saved"):
             _last_equity_snapshot_key = str(r.get("snapshot_key") or key)
@@ -655,6 +666,21 @@ class StockScheduler:
             summary["success"] = False
             return summary
 
+        # 매수 가능 USD 잔고 사전 확인
+        try:
+            cash_usd, _ = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd="NASD")
+            summary["cash_usd"] = cash_usd
+            if cash_usd is None or cash_usd <= 0:
+                logger.warning("매수 가능 잔고 없음 (cash_usd=%s) — 매수 중단", cash_usd)
+                summary["status"] = "insufficient_balance"
+                summary["success"] = False
+                return summary
+            remaining_cash = cash_usd
+            logger.info("매수 가능 잔고: $%.2f", remaining_cash)
+        except Exception as e:
+            logger.warning("잔고 사전 확인 실패 — KIS 거절에 의존해 진행: %s", e)
+            remaining_cash = None
+
         try:
             self.recommendation_service.generate_technical_recommendations()
         except Exception as te:
@@ -706,18 +732,39 @@ class StockScheduler:
                     msg1 = price_result.get("msg1", "알 수 없는 오류")
                     logger.error(f"{stock_name}({ticker}) 현재가 조회 실패: {msg1}")
                     summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "price_fetch_failed", "error": msg1})
+                    summary["success"] = False
                     continue
 
                 current_price = float(price_result.get("output", {}).get("last", 0))
                 if current_price <= 0:
                     logger.error(f"{stock_name}({ticker}) 현재가가 유효하지 않습니다: {current_price}")
                     summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "invalid_price"})
+                    summary["success"] = False
                     continue
 
                 if settings.TRADING_BUY_AMOUNT_USD > 0 and current_price > 0:
                     quantity = max(1, int(settings.TRADING_BUY_AMOUNT_USD // current_price))
                 else:
                     quantity = settings.TRADING_BUY_QUANTITY
+
+                # 잔고 부족 사전 차단
+                estimated_cost = current_price * quantity
+                if remaining_cash is not None and remaining_cash < estimated_cost:
+                    logger.warning(
+                        "%s(%s) 잔고 부족 — 필요 $%.2f, 남은 잔고 $%.2f → 매수 건너뜀",
+                        stock_name, ticker, estimated_cost, remaining_cash,
+                    )
+                    summary["items"].append({
+                        "ticker": pure_ticker,
+                        "stock_name": stock_name,
+                        "outcome": "insufficient_balance",
+                        "required_usd": estimated_cost,
+                        "remaining_cash_usd": remaining_cash,
+                        **_bmeta,
+                    })
+                    summary["success"] = False
+                    continue
+
                 order_data = {
                     "CANO": settings.KIS_CANO,
                     "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
@@ -784,6 +831,8 @@ class StockScheduler:
                     logger.info(f"{stock_name}({ticker}) 매수 주문 성공: {msg1 or '주문이 접수되었습니다.'}")
                     summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "order_success", "quantity": quantity, "limit_price": current_price, "exchange_code": exchange_code, "api_message": msg1, **_bmeta})
                     summary["ordered_count"] = summary.get("ordered_count", 0) + 1
+                    if remaining_cash is not None:
+                        remaining_cash -= estimated_cost
                 else:
                     logger.error(f"{stock_name}({ticker}) 매수 주문 실패: {msg1 or '알 수 없는 오류'}")
                     summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "order_failed", "error": msg1, "exchange_code": exchange_code, **_bmeta})
@@ -801,6 +850,7 @@ class StockScheduler:
             sync_holdings_to_db()
             sync_order_fills_to_db()
             sync_open_orders_to_db()
+            sync_cash_usd_to_db(ovrs_excg_cd="NASD")
         except Exception:
             logger.warning("매수 후 KIS→DB 재동기화 실패(무시)", exc_info=True)
         return summary

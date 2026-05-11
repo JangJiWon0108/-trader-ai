@@ -33,6 +33,7 @@ class EquityMetrics:
     total_cost_usd: float
     total_pnl_usd: float
     total_return_pct: float
+    seed_return_pct: float | None  # (총자산 - 초기시드) / 초기시드 * 100
 
 
 def _f(x: Any) -> float:
@@ -82,10 +83,14 @@ def compute_equity_metrics_from_db(*, now: datetime | None = None) -> EquityMetr
     h_resp = supabase.table("holdings").select("raw").execute()
     rows = [r.get("raw") for r in (h_resp.data or []) if isinstance(r, dict) and isinstance(r.get("raw"), dict)]
 
-    s_resp = supabase.table("holdings_summary").select("cash_usd").eq("id", "main").limit(1).execute()
+    s_resp = supabase.table("holdings_summary").select("cash_usd, initial_cash_usd").eq("id", "main").limit(1).execute()
     cash_usd = 0.0
+    initial_cash_usd: float | None = None
     try:
-        cash_usd = float(((s_resp.data or [{}])[0].get("cash_usd") or 0) or 0)
+        row = (s_resp.data or [{}])[0]
+        cash_usd = float((row.get("cash_usd") or 0) or 0)
+        v = row.get("initial_cash_usd")
+        initial_cash_usd = float(v) if v is not None else None
     except Exception:
         cash_usd = 0.0
 
@@ -99,6 +104,11 @@ def compute_equity_metrics_from_db(*, now: datetime | None = None) -> EquityMetr
 
     total_assets = float(total_eval + (cash_usd if cash_usd > 0 else 0.0))
     total_return_pct = (total_pnl / total_cost) * 100.0 if total_cost > 0 else 0.0
+    seed_return_pct: float | None = (
+        ((total_assets - initial_cash_usd) / initial_cash_usd) * 100.0
+        if initial_cash_usd and initial_cash_usd > 0
+        else None
+    )
 
     return EquityMetrics(
         ts_utc=ts_utc,
@@ -110,31 +120,43 @@ def compute_equity_metrics_from_db(*, now: datetime | None = None) -> EquityMetr
         total_cost_usd=float(total_cost),
         total_pnl_usd=float(total_pnl),
         total_return_pct=float(total_return_pct),
+        seed_return_pct=seed_return_pct,
     )
+
+
+KST = pytz.timezone("Asia/Seoul")
 
 
 def is_due_hourly_market_snapshot(*, now: datetime | None = None) -> bool:
     """
-    미국 정규장(ET)에서 1시간 간격 스냅샷(10:00, 11:00, ..., 16:00)만 True.
+    KST 기준 22:30 ~ 05:00 사이 10분 단위(00/10/20/30/40/50)에 True (미국 정규장 커버).
 
-    - 의도: 장 시작 직후(09:30) 데이터 불안정 구간을 피하고, "정각" 샘플링으로 단순화.
-    - (참고) KST 기준:
-      - 서머타임: 23:00 ~ 05:00
-      - 미적용: 00:00 ~ 06:00
+    - 서머타임: KST 22:30 ~ 05:00 (ET 09:30~16:00)
+    - 표준시:   KST 23:30 ~ 06:00 (ET 09:30~16:00)
+    - 22:30부터 샘플링하여(10분 단위) 서머타임/표준시 모두 커버.
+    - 평일(KST Mon~Fri)에만 동작.
     """
-    ts = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).astimezone(NY)
-    wd = ts.weekday()
-    if wd > 4:
+    ts_kst = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).astimezone(KST)
+    if ts_kst.weekday() > 4:
         return False
-    open_dt = ts.replace(hour=9, minute=30, second=0, microsecond=0)
-    close_dt = ts.replace(hour=16, minute=0, second=0, microsecond=0)
-    if not (open_dt <= ts <= close_dt):
+    if ts_kst.minute % 10 != 0:
         return False
-    if ts.minute != 0:
-        return False
-    if not (10 <= ts.hour <= 16):
-        return False
-    return True
+    h = ts_kst.hour
+    m = ts_kst.minute
+
+    # 22:30~22:59
+    if h == 22:
+        return m >= 30
+    # 23:00~23:59
+    if h == 23:
+        return True
+    # 00:00~04:59
+    if 0 <= h <= 4:
+        return True
+    # 05:00만 포함 (05:10 이후는 제외)
+    if h == 5:
+        return m == 0
+    return False
 
 
 def snapshot_key_for_now(*, now: datetime | None = None) -> str:
@@ -162,6 +184,7 @@ def save_equity_snapshot_if_due(*, now: datetime | None = None, force: bool = Fa
             "total_cost_usd": m.total_cost_usd,
             "total_pnl_usd": m.total_pnl_usd,
             "total_return_pct": m.total_return_pct,
+            "seed_return_pct": m.seed_return_pct,
             "source": "scheduler",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }

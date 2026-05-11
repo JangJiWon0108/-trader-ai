@@ -37,6 +37,47 @@ def _json_pretty(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2, default=str)
 
 
+def _get_usdkrw() -> float | None:
+    try:
+        from app.services.balance_service import _best_effort_usdkrw
+        return _best_effort_usdkrw()
+    except Exception:
+        return None
+
+
+def _get_portfolio_returns() -> tuple[float | None, float | None]:
+    try:
+        from app.services.daily_log_service import _compute_portfolio_snapshot
+        return _compute_portfolio_snapshot()
+    except Exception:
+        return None, None
+
+
+def _fmt_usd(usd: float, usdkrw: float | None) -> str:
+    if usdkrw and usdkrw > 0:
+        krw = usd * usdkrw
+        return f"${usd:.2f}(₩{krw:,.0f})"
+    return f"${usd:.2f}"
+
+
+def _format_portfolio_returns_section(usdkrw: float | None) -> str:
+    holdings_pct, seed_pct = _get_portfolio_returns()
+    lines = ["\n━━ 포트폴리오 수익률 ━━"]
+    if holdings_pct is not None:
+        s = "+" if holdings_pct >= 0 else ""
+        lines.append(f"📈 보유종목 기준 수익률: {s}{holdings_pct:.2f}%")
+    else:
+        lines.append("📈 보유종목 기준 수익률: —")
+    if seed_pct is not None:
+        s = "+" if seed_pct >= 0 else ""
+        lines.append(f"🌱 시드(시작자금) 기준 수익률: {s}{seed_pct:.2f}%")
+    else:
+        lines.append("🌱 시드(시작자금) 기준 수익률: —")
+    if usdkrw and usdkrw > 0:
+        lines.append(f"💱 환율: ₩{usdkrw:,.0f}/USD")
+    return "\n".join(lines)
+
+
 # ─── 공개 API ───
 
 
@@ -66,7 +107,7 @@ def notify_telegram_eod_report_generation_failed(
         logger.debug("텔레그램 미설정 또는 전송 실패(EOD 실패 알림)")
 
 
-def _format_holdings_section(balance: dict | None) -> str:
+def _format_holdings_section(balance: dict | None, usdkrw: float | None = None) -> str:
     """보유 종목 + 평가손익 섹션 문자열 반환."""
     if not balance:
         return ""
@@ -80,25 +121,29 @@ def _format_holdings_section(balance: dict | None) -> str:
         ticker = h.get("ovrs_pdno", "")
         name = h.get("ovrs_item_name") or ticker
         qty = h.get("ovrs_cblc_qty", "0")
-        avg = h.get("pchs_avg_pric", "0")
-        now_p = h.get("now_pric2", "0")
+        avg = float(h.get("pchs_avg_pric") or 0)
+        now_p = float(h.get("now_pric2") or 0)
         pl_amt = float(h.get("frcr_evlu_pfls_amt") or 0)
         pl_rt = float(h.get("evlu_pfls_rt") or 0)
         try:
-            total_cost += float(avg or 0) * float(qty or 0)
+            total_cost += avg * float(qty or 0)
         except (ValueError, TypeError):
             pass
         total_pl += pl_amt
         s = "+" if pl_amt >= 0 else ""
         sr = "+" if pl_rt >= 0 else ""
-        lines.append(f"  {name}({ticker}) {qty}주 | 매수${avg} → 현재${now_p} | {s}{pl_amt:.1f}$ ({sr}{pl_rt:.2f}%)")
+        avg_str = _fmt_usd(avg, usdkrw)
+        now_str = _fmt_usd(now_p, usdkrw)
+        pl_str = _fmt_usd(abs(pl_amt), usdkrw)
+        lines.append(f"  {name}({ticker}) {qty}주 | 매수{avg_str} → 현재{now_str} | {s}{pl_str} ({sr}{pl_rt:.2f}%)")
     s = "+" if total_pl >= 0 else ""
+    total_pl_str = _fmt_usd(abs(total_pl), usdkrw)
     if total_cost > 0:
         total_pct = total_pl / total_cost * 100
         sp = "+" if total_pct >= 0 else ""
-        lines.append(f"\n📊 총 평가손익: {s}{total_pl:.1f}$ ({sp}{total_pct:.2f}%)")
+        lines.append(f"\n📊 총 평가손익: {s}{total_pl_str} ({sp}{total_pct:.2f}%)")
     else:
-        lines.append(f"\n📊 총 평가손익: {s}{total_pl:.1f}$")
+        lines.append(f"\n📊 총 평가손익: {s}{total_pl_str}")
     return "\n".join(lines)
 
 
@@ -110,6 +155,8 @@ def notify_telegram_auto_sell_run(summary: dict | None) -> bool:
     items = summary.get("items") or []
     candidate_count = int(summary.get("candidate_count") or 0)
     balance = summary.get("balance_snapshot")
+
+    usdkrw = _get_usdkrw()
 
     ordered = [i for i in items if i.get("outcome") == "order_success"]
     failed_order = [i for i in items if i.get("outcome") == "order_failed"]
@@ -139,8 +186,9 @@ def notify_telegram_auto_sell_run(summary: dict | None) -> bool:
             tech = it.get("tech_details") or []
             sentiment = it.get("sentiment_score")
 
+            lp_str = _fmt_usd(float(lp), usdkrw) if lp is not None else "—"
             if outcome == "order_success":
-                st = f"✅ 매도완료 @${lp}"
+                st = f"✅ 매도완료 @{lp_str}"
             elif outcome == "order_failed":
                 st = f"❌ 매도실패: {it.get('error', '')}"
             else:
@@ -150,7 +198,8 @@ def notify_telegram_auto_sell_run(summary: dict | None) -> bool:
             if pp is not None and lp is not None:
                 sign = "+" if (pct or 0) >= 0 else ""
                 pct_str = f"{sign}{pct:.1f}%" if pct is not None else ""
-                price_info = f" | 매수${float(pp):.2f}→현재${float(lp):.2f} ({pct_str})"
+                pp_str = _fmt_usd(float(pp), usdkrw)
+                price_info = f" | 매수{pp_str}→현재{lp_str} ({pct_str})"
 
             lines.append(f"\n🔸 {name}({ticker}) {qty}주{price_info}")
             lines.append(f"   {st}")
@@ -161,7 +210,9 @@ def notify_telegram_auto_sell_run(summary: dict | None) -> bool:
             if sentiment is not None:
                 lines.append(f"   감성: {float(sentiment):.3f}")
 
-    holdings_text = _format_holdings_section(balance)
+    lines.append(_format_portfolio_returns_section(usdkrw))
+
+    holdings_text = _format_holdings_section(balance, usdkrw)
     if holdings_text:
         lines.append(holdings_text)
 
@@ -190,6 +241,8 @@ def notify_telegram_auto_buy_run(summary: dict | None, *, label: str | None = No
     status = summary.get("status", "")
     balance = summary.get("balance_snapshot")
 
+    usdkrw = _get_usdkrw()
+
     ordered = [i for i in items if i.get("outcome") == "order_success"]
     already = [i for i in items if i.get("outcome") == "already_holding"]
     failed = [i for i in items if i.get("outcome") == "order_failed"]
@@ -199,11 +252,17 @@ def notify_telegram_auto_buy_run(summary: dict | None, *, label: str | None = No
     lines = [f"{p} 자동 매수 결과{suffix}"]
     lines.append(f"⏰ {kst}")
 
-    if status in ("no_candidates", "balance_error", "balance_exception"):
+    if status == "insufficient_balance":
+        cash = summary.get("cash_usd")
+        cash_str = f"${cash:.2f}" if cash is not None else "알 수 없음"
+        lines.append(f"💰 잔고 부족으로 매수 중단 (주문가능 잔고: {cash_str})")
+    elif status in ("no_candidates", "balance_error", "balance_exception"):
         lines.append(f"ℹ️ {status}")
     else:
+        insuf = [i for i in items if i.get("outcome") == "insufficient_balance"]
         lines.append(
             f"📊 후보 {candidate_count}개 | 매수성공 {ordered_count}건 | 이미보유 {len(already)}개 | 실패 {len(failed)}건"
+            + (f" | 잔고부족 {len(insuf)}건" if insuf else "")
         )
 
     actionable = [i for i in items if i.get("outcome") not in ("already_holding",)]
@@ -216,10 +275,25 @@ def notify_telegram_auto_buy_run(summary: dict | None, *, label: str | None = No
             qty = it.get("quantity", "")
             lp = it.get("limit_price")
 
+            lp_str = _fmt_usd(float(lp), usdkrw) if lp is not None else "—"
             if outcome == "order_success":
-                lines.append(f"\n✅ {name}({ticker}) {qty}주 @${lp}")
+                lines.append(f"\n✅ {name}({ticker}) {qty}주 @{lp_str}")
             elif outcome == "order_failed":
                 lines.append(f"\n❌ {name}({ticker}) 매수실패: {it.get('error', '')}")
+                continue
+            elif outcome == "insufficient_balance":
+                req = it.get("required_usd")
+                rem = it.get("remaining_cash_usd")
+                req_str = f"${req:.2f}" if req is not None else "—"
+                rem_str = f"${rem:.2f}" if rem is not None else "—"
+                lines.append(f"\n💰 {name}({ticker}) 잔고부족 — 필요 {req_str} / 남은 잔고 {rem_str}")
+                continue
+            elif outcome == "price_fetch_failed":
+                lines.append(f"\n❌ {name}({ticker}) 현재가 조회 실패: {it.get('error', '')}")
+                continue
+            elif outcome == "invalid_price":
+                lines.append(f"\n❌ {name}({ticker}) 유효하지 않은 현재가")
+                continue
             else:
                 lines.append(f"\n⚠️ {name}({ticker}) {outcome}")
                 continue
@@ -245,7 +319,9 @@ def notify_telegram_auto_buy_run(summary: dict | None, *, label: str | None = No
     if already:
         lines.append(f"\n➖ 이미 보유: {', '.join(i.get('ticker','') for i in already)}")
 
-    holdings_text = _format_holdings_section(balance)
+    lines.append(_format_portfolio_returns_section(usdkrw))
+
+    holdings_text = _format_holdings_section(balance, usdkrw)
     if holdings_text:
         lines.append(holdings_text)
 
