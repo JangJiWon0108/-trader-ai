@@ -18,6 +18,7 @@ from typing import Any
 
 import pytz
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
 from alarm.telegram import send_telegram_long_text, send_telegram_message_detailed
 from app.core.config import settings
@@ -28,6 +29,7 @@ from app.utils.scheduler import (
     run_economic_data_update_now,
     run_inference_now,
     run_manual_buy_now,
+    run_manual_sell_now,
     start_economic_data_scheduler,
     start_scheduler,
     start_sell_scheduler,
@@ -440,6 +442,39 @@ def admin_trigger_manual_buy():
     except Exception as e:
         logger.exception("수동 매수 실패: %s", e)
         raise HTTPException(status_code=500, detail=f"수동 매수 실패: {str(e)}")
+
+
+class ManualSellRequest(BaseModel):
+    tickers: list[str]
+
+
+@router.post("/sell/trigger", summary="수동 매도 실행(관리자)")
+def admin_trigger_manual_sell(request: ManualSellRequest):
+    """
+    지정 티커를 즉시 매도합니다. 전략 룰 무관하게 강제 실행.
+
+    - **tickers**: 매도할 종목 티커 목록 (예: ["AMGN", "ADP"])
+    - 결과를 텔레그램으로 전송합니다.
+    """
+    if not request.tickers:
+        raise HTTPException(status_code=400, detail="tickers 목록이 비어있습니다.")
+    try:
+        result = run_manual_sell_now(request.tickers)
+        return {"success": True, "message": "수동 매도를 실행했습니다. 텔레그램 결과를 확인하세요.", "result": result}
+    except Exception as e:
+        logger.exception("수동 매도 실패: %s", e)
+        raise HTTPException(status_code=500, detail=f"수동 매도 실패: {str(e)}")
+
+
+@router.post("/snapshot/force", summary="총자산 스냅샷 강제 저장")
+def admin_force_snapshot():
+    from app.services.equity_snapshot_service import save_equity_snapshot_if_due
+    try:
+        result = save_equity_snapshot_if_due(force=True)
+        return {"success": result.get("saved", False), "result": result}
+    except Exception as e:
+        logger.exception("스냅샷 강제 저장 실패: %s", e)
+        raise HTTPException(status_code=500, detail=f"스냅샷 저장 실패: {str(e)}")
 
 
 @router.get("/inference/history", summary="추론 결과 히스토리(날짜 범위/페이지)")

@@ -30,6 +30,7 @@ from app.services.balance_service import (
     get_all_overseas_balances,
     get_current_price,
     order_overseas_stock,
+    cancel_overseas_order,
     sync_holdings_to_db,
     sync_order_fills_to_db,
     sync_open_orders_to_db,
@@ -408,10 +409,25 @@ class StockScheduler:
                 stock_name = candidate["stock_name"]
                 exchange_code = candidate["exchange_code"]
                 quantity = candidate["quantity"]
+                qty_sellable = candidate.get("qty_sellable", quantity)
 
                 sell_reasons = candidate.get("sell_reasons", [])
                 reasons_str = "; ".join(sell_reasons)
                 logger.info(f"{stock_name}({ticker}) 매도 근거: {reasons_str}")
+
+                # 매도가능수량 0 → 미체결 주문 있거나 T+1 잠금 → 스킵
+                if qty_sellable <= 0:
+                    logger.warning("%s(%s) 매도가능수량 0 — 미체결 주문 또는 T+1 잠금, 매도 건너뜀", stock_name, ticker)
+                    summary["items"].append({
+                        "ticker": ticker,
+                        "stock_name": stock_name,
+                        "outcome": "skipped_not_sellable",
+                        "sell_reasons": sell_reasons,
+                        **{k: v for k, v in {"purchase_price": candidate.get("purchase_price"), "price_change_pct": candidate.get("price_change_percent")}.items()},
+                    })
+                    continue
+
+                quantity = qty_sellable
                 _cmeta = {
                     "purchase_price": candidate.get("purchase_price"),
                     "price_change_pct": candidate.get("price_change_percent"),
@@ -513,32 +529,9 @@ class StockScheduler:
                 }
 
                 logger.info(f"{stock_name}({ticker}) 매도 주문 실행: 수량 {quantity}주, 가격 ${current_price}")
-                # KIS 주문 API는 초당 호출 제한이 있어, 해당 오류는 짧게 대기 후 재시도한다.
-                max_attempts = 3
-                backoff_sec = 1.0
-                order_result = None
-                msg1 = ""
-                order_success = False
-                for attempt in range(1, max_attempts + 1):
-                    order_result = order_overseas_stock(order_data)
-                    msg1 = order_result.get("msg1", "") if isinstance(order_result, dict) else ""
-                    order_success = bool(isinstance(order_result, dict) and order_result.get("rt_cd") == "0")
-                    if order_success:
-                        break
-                    if "초당" in str(msg1) or "거래건수" in str(msg1) or "too many" in str(msg1).lower():
-                        logger.warning(
-                            "%s(%s) 매도 레이트리밋 감지 → %ss 후 재시도 (%s/%s): %s",
-                            stock_name,
-                            ticker,
-                            backoff_sec,
-                            attempt,
-                            max_attempts,
-                            msg1,
-                        )
-                        time.sleep(backoff_sec)
-                        backoff_sec *= 2
-                        continue
-                    break
+                order_result = order_overseas_stock(order_data)
+                msg1 = order_result.get("msg1", "") if isinstance(order_result, dict) else ""
+                order_success = bool(isinstance(order_result, dict) and order_result.get("rt_cd") == "0")
 
                 try:
                     from app.services.daily_log_service import save_order
@@ -633,6 +626,127 @@ class StockScheduler:
         )
         return summary
     
+    def _execute_manual_sell(self, tickers: list) -> dict:
+        """지정 티커만 즉시 매도. 전략 룰 무관하게 강제 매도."""
+        import time as _time
+        from app.services.balance_service import get_all_overseas_balances, get_current_price, order_overseas_stock
+        from app.services.daily_log_service import save_order
+
+        now_ny = datetime.now(pytz.timezone("America/New_York"))
+        now_kst = datetime.now(pytz.timezone("Asia/Seoul"))
+
+        summary: dict = {
+            "job": "manual_sell",
+            "ny_trading_date": now_ny.strftime("%Y-%m-%d"),
+            "kst": now_kst.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "ny_et": now_ny.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            "candidate_count": len(tickers),
+            "items": [],
+        }
+
+        balance_result = get_all_overseas_balances()
+        if balance_result.get("rt_cd") != "0":
+            summary["status"] = "balance_fetch_failed"
+            summary["success"] = False
+            return summary
+
+        holdings_by_ticker = {
+            item["ovrs_pdno"]: item
+            for item in balance_result.get("output1", [])
+            if item.get("ovrs_pdno")
+        }
+
+        for ticker in tickers:
+            holding = holdings_by_ticker.get(ticker)
+            if not holding:
+                logger.warning("수동 매도: %s 보유 종목 없음 — 건너뜀", ticker)
+                summary["items"].append({"ticker": ticker, "outcome": "not_holding"})
+                continue
+
+            stock_name = holding.get("ovrs_item_name", ticker)
+            exchange_code = holding.get("ovrs_excg_cd", "NASD")
+            quantity = int(float(holding.get("ord_psbl_qty") or holding.get("ovrs_cblc_qty", 0)))
+
+            if quantity <= 0:
+                logger.warning("수동 매도: %s 매도가능 수량 0 — 건너뜀", ticker)
+                summary["items"].append({"ticker": ticker, "stock_name": stock_name, "outcome": "zero_quantity"})
+                continue
+
+            api_exchange_code = "NAS" if exchange_code == "NASD" else ("NYS" if exchange_code == "NYSE" else exchange_code)
+            price_result = get_current_price({"AUTH": "", "EXCD": api_exchange_code, "SYMB": ticker})
+
+            if price_result.get("rt_cd") != "0":
+                msg = price_result.get("msg1", "")
+                logger.error("수동 매도: %s 현재가 조회 실패 — %s", ticker, msg)
+                summary["items"].append({"ticker": ticker, "stock_name": stock_name, "outcome": "price_fetch_failed", "error": msg})
+                continue
+
+            last = price_result.get("output", {}).get("last", "")
+            try:
+                current_price = float(last)
+            except (ValueError, TypeError):
+                summary["items"].append({"ticker": ticker, "stock_name": stock_name, "outcome": "price_parse_error", "raw_last": str(last)})
+                continue
+
+            order_data = {
+                "CANO": settings.KIS_CANO,
+                "ACNT_PRDT_CD": settings.KIS_ACNT_PRDT_CD,
+                "OVRS_EXCG_CD": exchange_code,
+                "PDNO": ticker,
+                "ORD_DVSN": "00",
+                "ORD_QTY": str(quantity),
+                "OVRS_ORD_UNPR": str(current_price),
+                "is_buy": False,
+            }
+
+            order_result = order_overseas_stock(order_data)
+            msg1 = order_result.get("msg1", "") if isinstance(order_result, dict) else ""
+            order_success = bool(isinstance(order_result, dict) and order_result.get("rt_cd") == "0")
+
+            try:
+                save_order(
+                    side="sell",
+                    ticker=ticker,
+                    stock_name=stock_name,
+                    exchange_code=exchange_code,
+                    quantity=quantity,
+                    limit_price=current_price,
+                    rt_cd=order_result.get("rt_cd") if isinstance(order_result, dict) else None,
+                    api_message=msg1,
+                    success=order_success,
+                    source="manual_sell",
+                    payload={"reason": "manual_sell", "order_result": order_result, "order_request": order_data},
+                    ny_trading_date=now_ny.strftime("%Y-%m-%d"),
+                )
+            except Exception as oe:
+                logger.warning("수동 매도 order_history 저장 실패: %s", oe)
+
+            outcome = "order_success" if order_success else "order_failed"
+            summary["items"].append({
+                "ticker": ticker,
+                "stock_name": stock_name,
+                "outcome": outcome,
+                "quantity": quantity,
+                "limit_price": current_price,
+                "exchange_code": exchange_code,
+                "api_message": msg1,
+                "sell_reasons": ["manual_sell"],
+            })
+            logger.info("수동 매도 %s(%s) %s — %s", stock_name, ticker, outcome, msg1)
+            _time.sleep(2)
+
+        try:
+            sync_holdings_to_db()
+            sync_order_fills_to_db()
+            sync_open_orders_to_db()
+            sync_cash_usd_to_db(ovrs_excg_cd="NASD")
+        except Exception:
+            logger.warning("수동 매도 후 KIS→DB 재동기화 실패(무시)", exc_info=True)
+
+        summary["status"] = "completed"
+        summary["success"] = not any(it.get("outcome") == "order_failed" for it in summary["items"])
+        return summary
+
     def _execute_auto_buy(self) -> dict:
         """자동 매수 실행 로직. 실행 요약 dict 반환."""
         now_kst = datetime.now(pytz.timezone("Asia/Seoul"))
@@ -666,7 +780,7 @@ class StockScheduler:
             summary["success"] = False
             return summary
 
-        # 매수 가능 USD 잔고 사전 확인
+        # 매수 가능 USD 잔고 사전 확인 (remaining_cash: KIS 실시간, initial_cash_usd: DB 시드 고정값)
         try:
             cash_usd, _ = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd="NASD")
             summary["cash_usd"] = cash_usd
@@ -680,6 +794,16 @@ class StockScheduler:
         except Exception as e:
             logger.warning("잔고 사전 확인 실패 — KIS 거절에 의존해 진행: %s", e)
             remaining_cash = None
+
+        # 포지션 크기 계산 기준: DB에 저장된 시드(initial_cash_usd) — 매매 후 변하지 않는 고정값
+        try:
+            from app.db.supabase import supabase as _supa
+            _seed_resp = _supa.table("holdings_summary").select("initial_cash_usd").eq("id", "main").limit(1).execute()
+            initial_cash_usd = float(_seed_resp.data[0]["initial_cash_usd"]) if _seed_resp.data else None
+            logger.info("DB 시드 기준값: $%.2f", initial_cash_usd or 0)
+        except Exception as e:
+            logger.warning("DB 시드 조회 실패 — 현재 잔고로 대체: %s", e)
+            initial_cash_usd = remaining_cash
 
         try:
             self.recommendation_service.generate_technical_recommendations()
@@ -742,8 +866,14 @@ class StockScheduler:
                     summary["success"] = False
                     continue
 
-                if settings.TRADING_BUY_AMOUNT_USD > 0 and current_price > 0:
-                    quantity = max(1, int(settings.TRADING_BUY_AMOUNT_USD // current_price))
+                if settings.TRADING_BUY_PCT_OF_CASH > 0 and initial_cash_usd and initial_cash_usd > 0:
+                    buy_amount_usd = initial_cash_usd * settings.TRADING_BUY_PCT_OF_CASH
+                elif settings.TRADING_BUY_AMOUNT_USD > 0:
+                    buy_amount_usd = settings.TRADING_BUY_AMOUNT_USD
+                else:
+                    buy_amount_usd = 0
+                if buy_amount_usd > 0 and current_price > 0:
+                    quantity = max(1, int(buy_amount_usd // current_price))
                 else:
                     quantity = settings.TRADING_BUY_QUANTITY
 
@@ -777,64 +907,124 @@ class StockScheduler:
                 }
 
                 logger.info(f"{stock_name}({ticker}) 매수 주문 실행: 수량 {quantity}주, 가격 ${current_price}")
-                # KIS 주문 API는 초당 호출 제한이 있어, 해당 오류는 짧게 대기 후 재시도한다.
-                max_attempts = 3
-                backoff_sec = 1.0
-                order_result = None
-                msg1 = ""
-                order_success = False
-                for attempt in range(1, max_attempts + 1):
-                    order_result = order_overseas_stock(order_data)
-                    msg1 = order_result.get("msg1", "") if isinstance(order_result, dict) else ""
-                    order_success = bool(isinstance(order_result, dict) and order_result.get("rt_cd") == "0")
-                    if order_success:
-                        break
-                    # 레이트리밋 계열은 재시도
-                    if "초당" in str(msg1) or "거래건수" in str(msg1) or "too many" in str(msg1).lower():
-                        logger.warning(
-                            "%s(%s) 주문 레이트리밋 감지 → %ss 후 재시도 (%s/%s): %s",
-                            stock_name,
-                            ticker,
-                            backoff_sec,
-                            attempt,
-                            max_attempts,
-                            msg1,
-                        )
-                        time.sleep(backoff_sec)
-                        backoff_sec *= 2
-                        continue
-                    # 그 외 오류는 즉시 종료
-                    break
-
-                save_order(
-                    side="buy",
-                    ticker=pure_ticker,
-                    stock_name=stock_name,
-                    exchange_code=exchange_code,
-                    quantity=quantity,
-                    limit_price=current_price,
-                    order_type=settings.TRADING_ORDER_TYPE,
-                    rt_cd=order_result.get("rt_cd"),
-                    api_message=msg1,
-                    success=order_success,
-                    source="auto_buy",
-                    payload={
-                        "reason": "combined_recommendation(technical+sentiment+ai)",
-                        "meta": _bmeta,
-                        "order_result": order_result,
-                        "order_request": order_data,
-                    },
-                    ny_trading_date=now_ny.strftime("%Y-%m-%d"),
-                )
+                order_result = order_overseas_stock(order_data)
+                msg1 = order_result.get("msg1", "") if isinstance(order_result, dict) else ""
+                order_success = bool(isinstance(order_result, dict) and order_result.get("rt_cd") == "0")
 
                 if order_success:
-                    logger.info(f"{stock_name}({ticker}) 매수 주문 성공: {msg1 or '주문이 접수되었습니다.'}")
-                    summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "order_success", "quantity": quantity, "limit_price": current_price, "exchange_code": exchange_code, "api_message": msg1, **_bmeta})
-                    summary["ordered_count"] = summary.get("ordered_count", 0) + 1
-                    if remaining_cash is not None:
-                        remaining_cash -= estimated_cost
+                    # 매수 접수 후 실제 보유 반영 여부 확인 (최대 3회 × 4s = 12s)
+                    odno = (order_result.get("output") or {}).get("ODNO", "")
+                    holding_verified = False
+                    for _attempt in range(3):
+                        time.sleep(4)
+                        _vr = get_all_overseas_balances()
+                        if _vr.get("rt_cd") == "0":
+                            _vt = {h.get("ovrs_pdno") for h in _vr.get("output1", [])}
+                            if pure_ticker in _vt:
+                                holding_verified = True
+                                break
+
+                    if holding_verified:
+                        logger.info(f"{stock_name}({ticker}) 매수 주문 성공 및 보유 확인 완료: {msg1 or '주문이 접수되었습니다.'}")
+                        save_order(
+                            side="buy",
+                            ticker=pure_ticker,
+                            stock_name=stock_name,
+                            exchange_code=exchange_code,
+                            quantity=quantity,
+                            limit_price=current_price,
+                            order_type=settings.TRADING_ORDER_TYPE,
+                            rt_cd=order_result.get("rt_cd"),
+                            api_message=msg1,
+                            success=True,
+                            source="auto_buy",
+                            payload={
+                                "reason": "combined_recommendation(technical+sentiment+ai)",
+                                "meta": _bmeta,
+                                "order_result": order_result,
+                                "order_request": order_data,
+                            },
+                            ny_trading_date=now_ny.strftime("%Y-%m-%d"),
+                        )
+                        summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "order_success", "quantity": quantity, "limit_price": current_price, "exchange_code": exchange_code, "api_message": msg1, **_bmeta})
+                        summary["ordered_count"] = summary.get("ordered_count", 0) + 1
+                        if remaining_cash is not None:
+                            remaining_cash -= estimated_cost
+                    else:
+                        # 주문은 접수됐으나 보유 미반영 → 취소 시도
+                        logger.error(
+                            "%s(%s) 매수 후 보유 미반영 (ODNO=%s) — 취소 시도",
+                            stock_name, ticker, odno,
+                        )
+                        cancel_result = {}
+                        if odno:
+                            cancel_result = cancel_overseas_order(
+                                exchange_code=exchange_code,
+                                ticker=pure_ticker,
+                                orgn_odno=odno,
+                            )
+                            logger.error(
+                                "%s(%s) 취소 결과: rt_cd=%s msg=%s",
+                                stock_name, ticker,
+                                cancel_result.get("rt_cd"),
+                                cancel_result.get("msg1"),
+                            )
+                        cancel_msg = cancel_result.get("msg1", "") if cancel_result else ""
+                        save_order(
+                            side="buy",
+                            ticker=pure_ticker,
+                            stock_name=stock_name,
+                            exchange_code=exchange_code,
+                            quantity=quantity,
+                            limit_price=current_price,
+                            order_type=settings.TRADING_ORDER_TYPE,
+                            rt_cd=order_result.get("rt_cd"),
+                            api_message=f"order_unconfirmed_canceled (취소: {cancel_msg})",
+                            success=False,
+                            source="auto_buy",
+                            payload={
+                                "reason": "combined_recommendation(technical+sentiment+ai)",
+                                "meta": _bmeta,
+                                "order_result": order_result,
+                                "order_request": order_data,
+                                "cancel_result": cancel_result,
+                                "odno": odno,
+                            },
+                            ny_trading_date=now_ny.strftime("%Y-%m-%d"),
+                        )
+                        summary["items"].append({
+                            "ticker": pure_ticker,
+                            "stock_name": stock_name,
+                            "outcome": "order_unconfirmed_canceled",
+                            "odno": odno,
+                            "cancel_rt_cd": cancel_result.get("rt_cd"),
+                            "cancel_msg": cancel_result.get("msg1"),
+                            "exchange_code": exchange_code,
+                            **_bmeta,
+                        })
+                        summary["success"] = False
                 else:
                     logger.error(f"{stock_name}({ticker}) 매수 주문 실패: {msg1 or '알 수 없는 오류'}")
+                    save_order(
+                        side="buy",
+                        ticker=pure_ticker,
+                        stock_name=stock_name,
+                        exchange_code=exchange_code,
+                        quantity=quantity,
+                        limit_price=current_price,
+                        order_type=settings.TRADING_ORDER_TYPE,
+                        rt_cd=order_result.get("rt_cd"),
+                        api_message=msg1,
+                        success=False,
+                        source="auto_buy",
+                        payload={
+                            "reason": "combined_recommendation(technical+sentiment+ai)",
+                            "meta": _bmeta,
+                            "order_result": order_result,
+                            "order_request": order_data,
+                        },
+                        ny_trading_date=now_ny.strftime("%Y-%m-%d"),
+                    )
                     summary["items"].append({"ticker": pure_ticker, "stock_name": stock_name, "outcome": "order_failed", "error": msg1, "exchange_code": exchange_code, **_bmeta})
                     summary["success"] = False
 
@@ -1011,6 +1201,21 @@ def run_manual_buy_now():
 def run_auto_sell_now():
     """즉시 매도 실행 함수 (테스트용)"""
     stock_scheduler._run_auto_sell()
+
+def run_manual_sell_now(tickers: list) -> dict:
+    """수동 매도 실행 함수 (관리자용) — 지정 티커만 즉시 매도, 텔레그램 알림 포함."""
+    from alarm.notify import notify_telegram_auto_sell_run
+    summary = stock_scheduler._execute_manual_sell(tickers)
+    try:
+        summary["balance_snapshot"] = get_all_overseas_balances()
+    except Exception:
+        summary["balance_snapshot"] = None
+    try:
+        summary["telegram_sent"] = notify_telegram_auto_sell_run(summary)
+    except Exception as te:
+        summary["telegram_sent"] = False
+        logger.warning("수동 매도 텔레그램 전송 실패: %s", te)
+    return summary
 
 # 경제 데이터 스케줄러 관련 변수 및 함수
 economic_data_scheduler_running = False

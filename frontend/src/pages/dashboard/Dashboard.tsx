@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
 import Tooltip from '../../components/Tooltip'
@@ -190,6 +191,7 @@ function linePnlUsd(h: KisHolding): number {
 type SortCol = 'ticker' | 'name' | 'qty' | 'avg' | 'price' | 'pnl'
 
 export default function Dashboard() {
+  const nav = useNavigate()
   const currency = useCurrency()
   const balance = useApi(fetchAllBalances)
   const recommendations = useApi(fetchCombinedRecommendations)
@@ -239,7 +241,7 @@ export default function Dashboard() {
   }, [recommendations.data])
 
   const fillRows = useMemo(
-    () => sortOrderHistoryDesc(orderHistory.data?.items ?? []).slice(0, 12),
+    () => sortOrderHistoryDesc((orderHistory.data?.items ?? []).filter((it) => it.success === true)).slice(0, 12),
     [orderHistory.data],
   )
 
@@ -306,7 +308,17 @@ export default function Dashboard() {
         <Card
           title={
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-              <Tooltip tip="보유 평가액 + 예수금(주문가능外화 추정)">{`총 자산 (${labelUnit})`}</Tooltip>
+              <Tooltip
+                tip={[
+                  '내 계좌의 “현재 총 가치” 표시',
+                  '',
+                  '총자산 = 주식평가 + 예수금 계산식',
+                  '- 주식평가: 보유 주식의 현재가 기준 평가금액',
+                  '- 예수금: 투자 전 현금(주문 가능 금액) 기준',
+                ].join('\n')}
+              >
+                {`총 자산 (${labelUnit})`}
+              </Tooltip>
               <button
                 type="button"
                 onClick={() => { setChartMetric('assets'); setChartOpen(true) }}
@@ -368,7 +380,15 @@ export default function Dashboard() {
         <Card
           title={
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-              <Tooltip tip="보유 종목의 매입(증권사 매입합계, 비어 있으면 평단×수량) 대비 평가금액(현재가×수량) 손익률입니다.">
+              <Tooltip
+                tip={[
+                  '현재 보유 종목의 전체 손익률(%) 표시',
+                  '',
+                  '총수익률(%) = (평가손익 ÷ 매입원가) × 100 계산식',
+                  '- 평가손익: 현재 평가 기준 이익/손실 금액',
+                  '- 매입원가: 매입에 사용된 원금(매입금액) 기준',
+                ].join('\n')}
+              >
                 보유종목 수익률 (%)
               </Tooltip>
               <button
@@ -416,7 +436,19 @@ export default function Dashboard() {
 
         <Card title={
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
-            <Tooltip tip="KIS 초기 시드(psamount 기준) 대비 현재 총 자산(보유주식+현금) 수익률">시드 기준 수익률 (%)</Tooltip>
+            <Tooltip
+              tip={[
+                '시드 대비 수익률(%) 표시',
+                '',
+                '시드수익률(%) = (총자산 − 시드) ÷ 시드 × 100 계산식',
+                '- 시드: 시작 시점 기준금액',
+                '- 손익: 총자산 − 시드 기준 손익금액',
+                '',
+                '시드 미설정 시 “—” 표시',
+              ].join('\n')}
+            >
+              시드 기준 수익률 (%)
+            </Tooltip>
             <button
               type="button"
               onClick={() => { setChartMetric('seed_return'); setChartOpen(true) }}
@@ -450,24 +482,49 @@ export default function Dashboard() {
                 {balance.loading ? '…' : seedReturnPct == null ? '—' : fmtPct(seedReturnPct)}
               </div>
               <div style={{ marginTop: 8, fontSize: 12, color: theme.onSurfaceVariant }}>
-                {seedPnlUsd != null
-                  ? currency.unit === 'KRW' && seedPnlKrw != null
-                    ? `손익 ${seedPnlKrw >= 0 ? '+' : ''}₩${Math.round(seedPnlKrw).toLocaleString('ko-KR')}`
-                    : `손익 ${seedPnlUsd >= 0 ? '+' : ''}$${seedPnlUsd.toFixed(2)}`
-                  : '시드 미설정 (초기화 필요)'}
+                시드 {balance.loading ? '…' : seedUsd == null ? '미설정'
+                  : currency.unit === 'KRW' && seedKrw != null
+                    ? `₩${Math.round(seedKrw).toLocaleString('ko-KR')}`
+                    : `$${seedUsd.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
               </div>
-              <div style={{ marginTop: 4, fontSize: 11, color: theme.onSurfaceVariant }}>
-                {seedUsd != null
-                  ? currency.unit === 'KRW' && seedKrw != null
-                    ? `시드 ₩${Math.round(seedKrw).toLocaleString('ko-KR')} (KIS 기준)`
-                    : `시드 $${seedUsd.toLocaleString('en-US', { maximumFractionDigits: 0 })} (KIS 기준)`
-                  : '초기화 후 자동 설정'}
+              <div style={{ marginTop: 4, fontSize: 12, color: theme.onSurfaceVariant }}>
+                총자산 {balance.loading ? '…'
+                  : currency.unit === 'KRW' && usdKrw
+                    ? `₩${Math.round(totalAssets * usdKrw).toLocaleString('ko-KR')}`
+                    : `$${totalAssets.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 12, color: theme.onSurfaceVariant }}>
+                손익 {balance.loading ? '…' : seedPnlUsd == null ? '—'
+                  : currency.unit === 'KRW' && seedPnlKrw != null
+                    ? `${seedPnlKrw >= 0 ? '+' : ''}₩${Math.round(seedPnlKrw).toLocaleString('ko-KR')}`
+                    : `${seedPnlUsd >= 0 ? '+' : ''}$${seedPnlUsd.toFixed(2)}`}
               </div>
             </div>
           </div>
         </Card>
 
-        <Card title={<Tooltip tip="나스닥·NYSE·AMEX 합산 보유 종목">보유 종목 수 + 티커</Tooltip>}>
+        <Card title={
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <Tooltip tip="보유 종목">보유 종목 수 + 티커</Tooltip>
+            <button
+              type="button"
+              onClick={() => nav('/portfolio')}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                border: '1px solid rgba(148, 163, 184, 0.26)',
+                background: 'rgba(148, 163, 184, 0.12)',
+                color: theme.onSurface,
+                fontSize: 12,
+                fontWeight: 900,
+                cursor: 'pointer',
+              }}
+              title="포트폴리오/잔고 페이지로 이동"
+            >
+              자세히
+            </button>
+          </div>
+        }>
           <div style={{ fontSize: 22, fontWeight: 800, fontFamily: theme.fontDisplay, color: theme.onSurface }}>
             {balance.loading ? '…' : `${holdings.length}개`}
           </div>
@@ -522,7 +579,28 @@ export default function Dashboard() {
           </div>
         </Card>
 
-        <Card title={<Tooltip tip="복합 분석 추천 상위 종목">AI 추천 요약</Tooltip>}>
+        <Card title={
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <Tooltip tip="복합 분석 추천 상위 종목">AI 추천 요약</Tooltip>
+            <button
+              type="button"
+              onClick={() => nav('/recommendations')}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                border: '1px solid rgba(148, 163, 184, 0.26)',
+                background: 'rgba(148, 163, 184, 0.12)',
+                color: theme.onSurface,
+                fontSize: 12,
+                fontWeight: 900,
+                cursor: 'pointer',
+              }}
+              title="AI 추천 종목 페이지로 이동"
+            >
+              자세히
+            </button>
+          </div>
+        }>
           {recommendations.loading && <div style={{ color: theme.onSurfaceVariant }}>로딩 중…</div>}
           {recommendations.error && <div style={{ color: theme.negative }}>{recommendations.error}</div>}
           {!recommendations.loading && !recommendations.error && (
@@ -550,7 +628,28 @@ export default function Dashboard() {
           )}
         </Card>
 
-        <Card title={<Tooltip tip="최근 매수/매도 주문 내역">최근 주문 내역</Tooltip>}>
+        <Card title={
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+            <Tooltip tip="최근 매수/매도 주문 내역">최근 주문 내역</Tooltip>
+            <button
+              type="button"
+              onClick={() => nav('/orders')}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 999,
+                border: '1px solid rgba(148, 163, 184, 0.26)',
+                background: 'rgba(148, 163, 184, 0.12)',
+                color: theme.onSurface,
+                fontSize: 12,
+                fontWeight: 900,
+                cursor: 'pointer',
+              }}
+              title="주문 내역 페이지로 이동"
+            >
+              자세히
+            </button>
+          </div>
+        }>
           {orderHistory.loading && <div style={{ color: theme.onSurfaceVariant }}>로딩 중…</div>}
           {orderHistory.error && <div style={{ color: theme.negative }}>{orderHistory.error}</div>}
           {!orderHistory.loading && !orderHistory.error && (
@@ -590,7 +689,7 @@ export default function Dashboard() {
         </Card>
 
         <Card
-          title={<Tooltip tip="관리자 화면의 적재 현황과 동일 기준으로 표시합니다.">데이터 적재 현황</Tooltip>}
+          title={<Tooltip tip="데이터 적재 현황">데이터 적재 현황</Tooltip>}
           subtitle="경제 데이터 · 모델 추론 · 알파밴티지 감성"
         >
           <LoadMini label="경제 데이터 적재" ok={econOk} loading={economicLatest.loading} />

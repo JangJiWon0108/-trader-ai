@@ -90,6 +90,7 @@ export default function Tooltip({ tip, children, below, placement }: TooltipProp
               transform: bubble.place === 'above' ? 'translate(-50%, -100%)' : 'translate(-50%, 0)',
               zIndex: 100000,
               pointerEvents: 'auto',
+              whiteSpace: 'pre-line',
             }}
             onMouseEnter={clearHideTimer}
             onMouseLeave={scheduleHide}

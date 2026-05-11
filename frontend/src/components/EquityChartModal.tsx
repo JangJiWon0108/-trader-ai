@@ -65,16 +65,21 @@ function dayOfWeek(ymdKey: string) {
   return dt.getUTCDay() // 0=일..6=토
 }
 
-function upcomingThursdayRangeKst(): { todayKey: string; thuKey: string } | null {
+function currentWeekRangeKst(): { startKey: string; thuKey: string } | null {
   const nowIso = new Date().toISOString()
   const p = kstPartsFromIso(nowIso)
   if (!p) return null
-  const todayKey = ymd(p.y, p.m, p.d)
-  const dow = dayOfWeek(todayKey)
-  const thu = 4
-  const delta = (thu - dow + 7) % 7
-  const thuKey = addDays(todayKey, delta)
-  return { todayKey, thuKey }
+  const calendarKey = ymd(p.y, p.m, p.d)
+  // 00:00~05:59 KST는 전날 22:30 세션에 속하므로 하루 앞으로
+  const sessionKey = p.hh < 6 ? addDays(calendarKey, -1) : calendarKey
+  const dow = dayOfWeek(sessionKey)
+  // 이번 주 월요일(세션 기준)
+  const daysFromMon = (dow - 1 + 7) % 7
+  const startKey = addDays(sessionKey, -daysFromMon)
+  // 이번 주 목요일
+  const daysToThu = (4 - dow + 7) % 7
+  const thuKey = addDays(sessionKey, daysToThu)
+  return { startKey, thuKey }
 }
 
 function fmtMoney(n: number) {
@@ -89,7 +94,7 @@ function fmtPct(n: number) {
 
 function fmtYLabel(v: number, metric: Metric) {
   if (metric === 'assets') return `$${fmtMoney(v)}`
-  return `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`
 }
 
 // session_date(YYYY-MM-DD, KST) → "월 5/12" 형태
@@ -116,13 +121,13 @@ function valueOf(x: EquitySnapshot, metric: Metric): number | null {
 }
 
 function toSeries(items: EquitySnapshot[], metric: Metric) {
-  const range = upcomingThursdayRangeKst()
+  const range = currentWeekRangeKst()
   if (!range) return { points: [] as SlotPoint[], sessions: [] as string[] }
-  const { todayKey, thuKey } = range
+  const { startKey, thuKey } = range
 
-  // today..thu (inclusive)
+  // 이번 주 월요일..목요일 (inclusive)
   const sessions: string[] = []
-  let cur = todayKey
+  let cur = startKey
   for (let i = 0; i < 7; i++) {
     sessions.push(cur)
     if (cur === thuKey) break
@@ -144,7 +149,7 @@ function toSeries(items: EquitySnapshot[], metric: Metric) {
     // 22:30~23:59는 해당 날짜 세션, 00:00~05:00는 전날 세션으로 귀속
     const kstYmd = ymd(p.y, p.m, p.d)
     const sessionYmd = (p.hh === 22 || p.hh === 23) ? kstYmd : addDays(kstYmd, -1)
-    if (sessionYmd < todayKey || sessionYmd > thuKey) continue
+    if (sessionYmd < startKey || sessionYmd > thuKey) continue
 
     const v = valueOf(it, metric)
     if (v == null) continue
@@ -174,9 +179,9 @@ function toSeries(items: EquitySnapshot[], metric: Metric) {
   return { points, sessions }
 }
 
-const MARGIN = { top: 16, right: 16, bottom: 64, left: 80 }
+const MARGIN = { top: 16, right: 16, bottom: 84, left: 80 }
 const BASE_W = 920
-const H = 290
+const H = 420
 const Y_TICKS = 5
 
 type Series = ReturnType<typeof toSeries>
@@ -187,7 +192,7 @@ function buildChart(series: Series, metric: Metric, width: number) {
   const IH = H - MARGIN.top - MARGIN.bottom
 
   const values = series.points.map((s) => s.v).filter((v): v is number => v != null && isFinite(v))
-  if (values.length < 2) return null
+  if (values.length < 1) return null
 
   const rawMin = Math.min(...values)
   const rawMax = Math.max(...values)
@@ -204,7 +209,8 @@ function buildChart(series: Series, metric: Metric, width: number) {
   const segments: { linePath: string; fillPath: string; lastX: number; lastY: number }[] = []
   let cur: { xs: number[]; ys: number[] } | null = null
   const flush = () => {
-    if (!cur || cur.xs.length < 2) { cur = null; return }
+    if (!cur || cur.xs.length < 1) { cur = null; return }
+    if (cur.xs.length === 1) { cur.xs.push(cur.xs[0]! + 2); cur.ys.push(cur.ys[0]!) }
     const c = cur
     const linePath = c.xs.map((x, i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${c.ys[i]!.toFixed(1)}`).join(' ')
     const lastX = c.xs[c.xs.length - 1] ?? 0
@@ -237,11 +243,9 @@ function buildChart(series: Series, metric: Metric, width: number) {
     return { midX: toX(midIdx), sepX, day, date, sessionYmd }
   })
 
-  const hourTicks = series.points.map((p, i) => ({
-    x: toX(i),
-    idx: i,
-    label: fmtSlotLabelKst(p.hh, p.mm),
-  }))
+  const hourTicks = series.points
+    .map((p, i) => ({ x: toX(i), idx: i, label: fmtSlotLabelKst(p.hh, p.mm), hasData: p.v != null && isFinite(p.v) }))
+    .filter((t) => t.hasData)
 
   const lastPoint = [...series.points].reverse().find((p) => p.v != null && isFinite(p.v as number)) ?? null
   const lineColor = metric === 'assets'
@@ -336,7 +340,7 @@ export default function EquityChartModal({
         <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
             <div style={{ fontSize: 12, color: theme.onSurfaceVariant }}>
-              표시 범위: 오늘~목요일(주간) · KST 22:30~05:00 10분 단위
+              표시 범위: 이번 주 월~목 · KST 22:30~05:00 10분 단위
             </div>
             {last && (
               <div style={{ fontSize: 12, color: theme.onSurface, fontVariantNumeric: 'tabular-nums' }}>
@@ -358,7 +362,7 @@ export default function EquityChartModal({
           }}>
             {!chart ? (
               <div style={{ color: theme.onSurfaceVariant, fontSize: 13, padding: '20px 0' }}>
-                표시할 스냅샷이 아직 없습니다. (KST 22:30~05:00 10분 단위 기록)
+                이번 주 스냅샷이 아직 없습니다. (KST 22:30~05:00 10분 단위 기록)
               </div>
             ) : (
               <div style={{ width: '100%', overflowX: 'auto', overflowY: 'hidden' }}>
@@ -432,16 +436,17 @@ export default function EquityChartModal({
                     </g>
                   ))}
 
-                  {/* 시간 레이블 (10분 단위) */}
+                  {/* 시간 레이블 (10분 단위, 90도 회전) */}
                   {chart.hourTicks.map((t) => (
                     <text
                       key={`xh-${t.idx}`}
                       x={t.x}
-                      y={chart.IH + 52}
-                      textAnchor="middle"
+                      y={chart.IH + 80}
+                      textAnchor="end"
                       fill="rgba(15,23,42,0.55)"
                       fontSize={9}
                       fontFamily="monospace"
+                      transform={`rotate(90, ${t.x}, ${chart.IH + 80})`}
                     >
                       {t.label}
                     </text>

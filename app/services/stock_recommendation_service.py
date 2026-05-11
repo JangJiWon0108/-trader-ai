@@ -87,7 +87,6 @@ STOCK_TO_TICKER = {
     "앱러빈": "APP",
     "팔로알토 네트웍스": "PANW",
     "마벨 테크놀로지": "MRVL",
-    "허니웰 인터내셔널": "HON",
     "부킹홀딩스": "BKNG",
     "스타벅스": "SBUX",
     "콘스텔레이션 에너지": "CEG",
@@ -693,6 +692,7 @@ class StockRecommendationService:
                 purchase_price = float(item.get("pchs_avg_pric", 0))
                 current_price = float(item.get("now_pric2", 0))
                 quantity = int(item.get("ovrs_cblc_qty", 0))
+                qty_sellable = int(item.get("ord_psbl_qty", 0))
                 exchange_code = item.get("ovrs_excg_cd", "")
                 
                 # 가격 변동률 계산
@@ -763,6 +763,7 @@ class StockRecommendationService:
                         "current_price": current_price,
                         "price_change_percent": price_change_percent,
                         "quantity": quantity,
+                        "qty_sellable": qty_sellable,
                         "exchange_code": exchange_code,
                         "sell_reasons": sell_reasons,
                         "technical_sell_signals": technical_sell_signals,

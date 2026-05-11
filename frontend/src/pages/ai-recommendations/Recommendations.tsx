@@ -16,12 +16,34 @@ function fmt(n: number | null | undefined, digits = 2) {
   return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 }
 
-function signalVariant(rec: string): 'buy' | 'sell' | 'hold' | 'neutral' {
-  const r = rec.toUpperCase()
-  if (r === 'BUY' || r === '매수') return 'buy'
-  if (r === 'SELL' || r === '매도') return 'sell'
-  if (r === 'HOLD' || r === '보유') return 'hold'
+function normalizeRec(rec: string | null | undefined) {
+  return String(rec ?? '').trim()
+}
+
+function signalVariant(rec: string | null | undefined): 'buy' | 'sell' | 'hold' | 'neutral' {
+  const raw = normalizeRec(rec)
+  if (!raw) return 'neutral'
+  const r = raw.toUpperCase()
+
+  // 영문 케이스: BUY / STRONG BUY / BUYING 등
+  if (r.includes('BUY')) return 'buy'
+  if (r.includes('SELL')) return 'sell'
+  if (r.includes('HOLD')) return 'hold'
+
+  // 한글 케이스: 매수/매도/보유
+  if (raw.includes('매수')) return 'buy'
+  if (raw.includes('매도')) return 'sell'
+  if (raw.includes('보유')) return 'hold'
+
   return 'neutral'
+}
+
+function signalLabel(rec: string | null | undefined) {
+  const v = signalVariant(rec)
+  if (v === 'buy') return '매수'
+  if (v === 'sell') return '매도'
+  if (v === 'hold') return '보유'
+  return '—'
 }
 
 function SentimentDot({ score, threshold }: { score: number | undefined; threshold: number }) {
@@ -136,7 +158,7 @@ export default function Recommendations() {
                     <tr key={r.ticker}>
                       <td style={{ ...tdBase, fontWeight: 900 }}>{r.ticker}</td>
                       <td style={tdBase}>{r.stock_name}</td>
-                      <td style={tdBase}><Badge variant={signalVariant(r.recommendation)} /></td>
+                      <td style={tdBase}><Badge variant={signalVariant(r.recommendation)}>{signalLabel(r.recommendation)}</Badge></td>
                       <td style={{ ...tdBase, textAlign: 'right', fontWeight: 900, color: r.rise_probability > 0 ? theme.positive : theme.negative }}>
                         {fmt(r.rise_probability, 1)}%
                       </td>
@@ -182,7 +204,7 @@ export default function Recommendations() {
                   {sortedPred.map((p) => (
                     <tr key={p.stock}>
                       <td style={{ ...tdBase, fontWeight: 900 }}>{p.stock}</td>
-                      <td style={tdBase}><Badge variant={signalVariant(p.recommendation ?? '')} /></td>
+                      <td style={tdBase}><Badge variant={signalVariant(p.recommendation)}>{signalLabel(p.recommendation)}</Badge></td>
                       <td style={{ ...tdBase, textAlign: 'right' }}>{p.accuracy != null ? `${fmt(p.accuracy, 1)}%` : '—'}</td>
                       <td style={{ ...tdBase, textAlign: 'right', fontWeight: 900, color: (p.rise_probability ?? 0) > 0 ? theme.positive : theme.negative }}>
                         {fmt(p.rise_probability, 1)}%

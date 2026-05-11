@@ -62,9 +62,19 @@ def _line_eval_usd(h: dict) -> float:
 
 
 def _line_pnl_usd(h: dict) -> float:
-    kis = _f(h.get("frcr_evlu_pfls_amt"))
-    if kis != 0.0:
-        return kis
+    """
+    종목 평가손익(USD).
+
+    주의:
+    - KIS 필드(frcr_evlu_pfls_amt)가 "0"일 수도 있는데, 이 경우도 '유효한 값'이다.
+    - 따라서 '0이면 비어있음'으로 간주하면 프론트(0을 그대로 사용)와 산식이 달라질 수 있다.
+    """
+    raw = h.get("frcr_evlu_pfls_amt", None)
+    if raw is not None and str(raw).strip() != "":
+        try:
+            return float(str(raw).strip())
+        except Exception:
+            pass
     return _line_eval_usd(h) - _line_cost_usd(h)
 
 

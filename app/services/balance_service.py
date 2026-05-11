@@ -276,7 +276,7 @@ def get_all_overseas_balances():
                 o2 = result.get("output2") or {}
                 if isinstance(o2, dict) and o2:
                     output2_best = o2
-                    for k in ("frcr_ord_psbl_amt1", "ovrs_ord_psbl_amt", "ord_psbl_frcr_amt"):
+                    for k in ("ovrs_ord_psbl_amt", "ord_psbl_frcr_amt"):
                         try:
                             v = float(str(o2.get(k) or "0") or "0")
                         except Exception:
@@ -447,8 +447,6 @@ def _get_cash_usd_via_psamount_best_effort(*, ovrs_excg_cd: str = "NASD") -> tup
         vals = [
             _f("ord_psbl_frcr_amt"),
             _f("ovrs_ord_psbl_amt"),
-            _f("frcr_ord_psbl_amt1"),
-            _f("echm_af_ord_psbl_amt"),
         ]
         best = max(vals) if vals else 0.0
         exrt = _f("exrt") or None
@@ -1203,6 +1201,11 @@ def reset_mock_investment(*, max_total_sec: int = 180) -> dict:
             msg1 = order_result.get("msg1", "") if isinstance(order_result, dict) else ""
             order_success = bool(isinstance(order_result, dict) and order_result.get("rt_cd") == "0")
 
+            from app.services.daily_log_service import save_order
+            from app.api.routes.stocks import TICKER_TO_STOCK
+            _stock_name = TICKER_TO_STOCK.get(ticker, ticker)
+            _ny_date = datetime.now(pytz.timezone("America/New_York")).strftime("%Y-%m-%d")
+
             if order_success:
                 logger.info("리셋: %s %s주 매도 주문 접수 @ $%s", ticker, qty, current_price)
                 summary["sold"].append(
@@ -1215,10 +1218,46 @@ def reset_mock_investment(*, max_total_sec: int = 180) -> dict:
                         "round": round_idx,
                     }
                 )
+                try:
+                    save_order(
+                        side="sell",
+                        ticker=ticker,
+                        stock_name=_stock_name,
+                        exchange_code=exchange_code,
+                        quantity=qty,
+                        limit_price=current_price,
+                        order_type=order_data.get("ORD_DVSN"),
+                        rt_cd=order_result.get("rt_cd"),
+                        api_message=msg1,
+                        success=True,
+                        source="reset",
+                        payload={"reason": "reset_all_positions", "order_result": order_result},
+                        ny_trading_date=_ny_date,
+                    )
+                except Exception as _se:
+                    logger.warning("리셋: %s save_order 실패(무시): %s", ticker, _se)
             else:
                 if last_fail_msg.get(ticker) != msg1:
                     logger.error("리셋: %s 매도 실패: %s", ticker, msg1)
                     last_fail_msg[ticker] = msg1
+                try:
+                    save_order(
+                        side="sell",
+                        ticker=ticker,
+                        stock_name=_stock_name,
+                        exchange_code=exchange_code,
+                        quantity=qty,
+                        limit_price=current_price,
+                        order_type=order_data.get("ORD_DVSN"),
+                        rt_cd=(order_result or {}).get("rt_cd"),
+                        api_message=msg1,
+                        success=False,
+                        source="reset",
+                        payload={"reason": "reset_all_positions", "order_result": order_result},
+                        ny_trading_date=_ny_date,
+                    )
+                except Exception as _se:
+                    logger.warning("리셋: %s 실패 save_order 실패(무시): %s", ticker, _se)
                 summary["failed"].append(
                     {
                         "ticker": ticker,
@@ -1452,7 +1491,7 @@ def sync_holdings_to_db() -> bool:
                     })
                 o2 = result.get("output2") or {}
                 output2_best = o2
-                for k in ("frcr_ord_psbl_amt1", "ovrs_ord_psbl_amt", "ord_psbl_frcr_amt"):
+                for k in ("ovrs_ord_psbl_amt", "ord_psbl_frcr_amt"):
                     v = float(str(o2.get(k) or "0") or "0")
                     if v > cash_usd:
                         cash_usd = v
