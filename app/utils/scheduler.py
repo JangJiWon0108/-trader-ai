@@ -98,6 +98,7 @@ class StockScheduler:
         self._sell_job = None
         self._sell_lock = threading.Lock()  # 동시 실행 방지
         self._last_not_market_hours_log_at: datetime | None = None
+        self._prev_market_hours: bool | None = None  # 장 오픈/마감 전환 감지용
 
     @staticmethod
     def _calc_market_window(now_in_ny: datetime) -> tuple[bool, datetime, datetime]:
@@ -307,6 +308,21 @@ class StockScheduler:
         next_open_kst = next_open_ny.astimezone(pytz.timezone("Asia/Seoul"))
         mins_to_open = int(max(0, (next_open_ny - now_in_ny).total_seconds()) // 60)
 
+        # ── 장 오픈/마감 전환 감지 ─────────────────────────────────────────────
+        just_opened = self._prev_market_hours is False and is_market_hours is True
+        just_closed = self._prev_market_hours is True and is_market_hours is False
+        self._prev_market_hours = is_market_hours
+
+        # 장 마감 감지: 마지막 KIS→DB 최종 동기화 후 종료
+        if just_closed:
+            logger.info("장 마감 감지 — 최종 KIS→DB 동기화 실행")
+            try:
+                sync_holdings_to_db()
+                sync_order_fills_to_db()
+                sync_open_orders_to_db()
+            except Exception:
+                logger.warning("장 마감 최종 sync 실패", exc_info=True)
+
         summary: dict = {
             "job": "auto_sell",
             "ny_trading_date": now_in_ny.strftime("%Y-%m-%d"),
@@ -348,7 +364,9 @@ class StockScheduler:
             summary["candidate_count"] = 0
             return summary
 
-        # 장중에는 프론트가 DB에서만 읽도록: KIS → Supabase 스냅샷을 1분마다 갱신
+        # 장중: KIS → Supabase 동기화 (장 오픈 첫 실행이면 즉시, 이후 매 인터벌마다)
+        if just_opened:
+            logger.info("장 오픈 감지 — 즉시 KIS→DB 동기화 실행")
         try:
             sync_holdings_to_db()
             sync_order_fills_to_db()

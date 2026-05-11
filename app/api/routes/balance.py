@@ -51,17 +51,29 @@ def read_balance():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"잔고 조회 중 오류 발생: {str(e)}")
 
-@router.get("/overseas", summary="해외주식 잔고 조회 (DB 스냅샷)")
+@router.get("/overseas", summary="해외주식 잔고 조회 (KIS 직접)")
 def read_balance_overseas(ovrs_excg_cd: str = Query(default="NASD")):
-    """프론트는 항상 Supabase(DB) 스냅샷을 읽는다.
+    """KIS API에서 직접 전 거래소(NASD/NYSE/AMEX) 잔고를 조회한다.
 
-    - KIS는 스케줄러/수동 sync로 DB에 반영된다.
-    - KIS 원본 확인은 /balance/overseas/kis-raw 사용.
+    - 24/7 조회 가능 (장외에도 동작).
+    - DB 동기화 오차 없음.
+    - DB 폴백은 /balance/overseas/db 사용.
     """
     try:
-        r = get_holdings_from_db()
+        from app.services.balance_service import get_all_overseas_balances
+        r = get_all_overseas_balances()
         if isinstance(r, dict):
-            r["_source"] = "db"
+            if "cash_usd_best_effort" in r:
+                r["cashUsdBestEffort"] = r.pop("cash_usd_best_effort")
+            r["_source"] = "kis_live"
+            # holdings_summary에서 initial_cash_usd 조회해서 포함
+            try:
+                from app.services.balance_service import supabase as _sb
+                row = (_sb.table("holdings_summary").select("initial_cash_usd").eq("id", "main").limit(1).execute().data or [{}])[0]
+                v = row.get("initial_cash_usd")
+                r["initialCashUsd"] = float(v) if v is not None else None
+            except Exception:
+                r["initialCashUsd"] = None
         return r
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"잔고 조회 중 오류 발생: {str(e)}")
@@ -578,7 +590,6 @@ def initialize_mock_trading():
             # 장외: KIS reset 스킵, DB 초기화만 수행
 
         db_reset = reset_trading_state_in_db(
-            initial_cash_krw=int(settings.MOCK_INITIAL_CASH_KRW),
             wipe_trade_logs=True,
         )
         result = {
@@ -682,7 +693,6 @@ def initialize_db_only():
             scheduler_stop["error"] = str(se)
 
         db_reset = reset_trading_state_in_db(
-            initial_cash_krw=int(settings.MOCK_INITIAL_CASH_KRW),
             wipe_trade_logs=True,
         )
 

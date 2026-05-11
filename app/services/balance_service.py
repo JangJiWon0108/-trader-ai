@@ -303,25 +303,25 @@ def get_all_overseas_balances():
             seen_pdno.add(pdno)
         deduped_holdings.append(h)
 
+    # output2에 현금 필드가 없는 경우(모의투자 등) psamount로 보완
+    if cash_usd_best <= 0:
+        try:
+            ps_cash, _ = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd="NASD")
+            if ps_cash and ps_cash > 0:
+                cash_usd_best = ps_cash
+        except Exception:
+            pass
+
     # 통합된 잔고 정보 반환
-    if deduped_holdings:
-        return {
-            "rt_cd": "0",
-            "msg_cd": "00000",
-            "msg1": "모든 거래소 잔고 조회 완료",
-            "output1": deduped_holdings,
-            "output2": output2_best,
-            "cash_usd_best_effort": cash_usd_best,
-        }
-    else:
-        return {
-            "rt_cd": "0",
-            "msg_cd": "00000",
-            "msg1": "보유 종목이 없습니다.",
-            "output1": deduped_holdings,
-            "output2": output2_best,
-            "cash_usd_best_effort": cash_usd_best,
-        }
+    msg = "모든 거래소 잔고 조회 완료" if deduped_holdings else "보유 종목이 없습니다."
+    return {
+        "rt_cd": "0",
+        "msg_cd": "00000",
+        "msg1": msg,
+        "output1": deduped_holdings,
+        "output2": output2_best,
+        "cash_usd_best_effort": cash_usd_best,
+    }
 
 # 추가: 해외주식 예약주문 접수
 def overseas_order_resv(order_data):
@@ -417,12 +417,10 @@ def inquire_psamount(params):
         raise
 
 
-def _get_cash_usd_via_psamount_best_effort(*, ovrs_excg_cd: str = "NASD") -> float | None:
+def _get_cash_usd_via_psamount_best_effort(*, ovrs_excg_cd: str = "NASD") -> tuple[float | None, float | None]:
     """
-    KIS '해외주식 매수가능금액 조회'를 이용해 주문가능 외화(USD)를 best-effort로 계산한다.
-
-    - 해외 잔고조회(output2)에 현금 필드가 비어있거나 불안정한 경우가 있어 보완용으로 사용한다.
-    - ovrs_ord_unpr=1(USD) 같은 작은 값으로 조회하면 충분하다.
+    KIS psamount 기반 주문가능 USD + KIS 제공 환율(exrt) 반환.
+    반환: (cash_usd, usdkrw_exrt) — 실패 시 (None, None)
     """
     try:
         r = inquire_psamount(
@@ -435,10 +433,10 @@ def _get_cash_usd_via_psamount_best_effort(*, ovrs_excg_cd: str = "NASD") -> flo
             }
         )
         if not isinstance(r, dict) or r.get("rt_cd") != "0":
-            return None
+            return None, None
         out = r.get("output") or {}
         if not isinstance(out, dict):
-            return None
+            return None, None
 
         def _f(k: str) -> float:
             try:
@@ -453,22 +451,27 @@ def _get_cash_usd_via_psamount_best_effort(*, ovrs_excg_cd: str = "NASD") -> flo
             _f("echm_af_ord_psbl_amt"),
         ]
         best = max(vals) if vals else 0.0
-        return best if best > 0 else None
+        exrt = _f("exrt") or None
+        return (best if best > 0 else None), exrt
     except Exception:
-        return None
+        return None, None
 
 
 def sync_cash_usd_to_db(*, ovrs_excg_cd: str = "NASD") -> bool:
-    """KIS 매수가능금액조회 기반 현금(USD) → holdings_summary.cash_usd 동기화."""
+    """KIS psamount 기반 현금(USD) + 환율 → holdings_summary 동기화."""
     try:
-        cash = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd=ovrs_excg_cd)
+        cash, exrt = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd=ovrs_excg_cd)
         if cash is None or cash <= 0:
             return False
         supabase.table("holdings_summary").upsert(
             {
                 "id": "main",
                 "cash_usd": float(cash),
-                "output2": {"cash_source": "psamount", "ovrs_excg_cd": ovrs_excg_cd},
+                "output2": {
+                    "cash_source": "psamount",
+                    "ovrs_excg_cd": ovrs_excg_cd,
+                    "usdkrw_exrt": exrt,
+                },
                 "synced_at": datetime.now(timezone.utc).isoformat(),
             },
             on_conflict="id",
@@ -1473,7 +1476,7 @@ def sync_holdings_to_db() -> bool:
         cash_to_write = cash_usd
         if cash_to_write <= 0:
             # output2에 현금 필드가 비는 케이스(특히 모의투자) 보완: psamount로 주문가능 외화 조회
-            ps_cash = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd="NASD")
+            ps_cash, _ = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd="NASD")
             if ps_cash and ps_cash > 0:
                 cash_to_write = ps_cash
         if cash_to_write <= 0:
@@ -1846,21 +1849,15 @@ def _delete_all_rows_status(table: str, pk_col: str) -> dict:
 
 
 def _best_effort_usdkrw() -> float | None:
-    """
-    USDKRW 환율 best-effort.
-
-    NOTE:
-    - `economic_and_stock_data`의 "미국 달러 환율" 컬럼은 USDKRW(원/달러)가 아닐 수 있다(예: DXY 등).
-    - 프론트는 별도 공개 API로 USDKRW를 가져와 표시/환산한다.
-    - 따라서 백엔드 초기화(시드)에는 이 값을 신뢰하지 않고, 여기서는 None을 반환한다.
-    """
+    """KIS psamount의 exrt(환율) 반환. 실패 시 None."""
     try:
-        return None
+        _, exrt = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd="NASD")
+        return exrt if exrt and exrt > 0 else None
     except Exception:
         return None
 
 
-def reset_trading_state_in_db(*, initial_cash_krw: int, wipe_trade_logs: bool = False) -> dict:
+def reset_trading_state_in_db(*, wipe_trade_logs: bool = False) -> dict:
     """
     '거래 상태'만 초기화한다.
     - 잔고/요약(holdings/holdings_summary)
@@ -1869,9 +1866,10 @@ def reset_trading_state_in_db(*, initial_cash_krw: int, wipe_trade_logs: bool = 
     - 주문 이력(order_history), 잔고 스냅샷(balance_snapshots)
     - 대시보드 그래프 스냅샷(equity_snapshots)
 
+    초기 시드 자금은 KIS psamount(주문가능금액)에서 직접 조회한다.
     경제/추론/감성 테이블은 유지한다.
     """
-    summary: dict = {"initial_cash_krw": int(initial_cash_krw)}
+    summary: dict = {}
 
     # 1) 스냅샷/거래 테이블 비우기
     deletions = {
@@ -1904,40 +1902,33 @@ def reset_trading_state_in_db(*, initial_cash_krw: int, wipe_trade_logs: bool = 
     summary["deleted"] = {k: v.get("deleted", 0) for k, v in deletions.items()}
     summary["delete_status"] = deletions
 
-    # 2) 초기 자금 반영(USD 추정치)
-    #
-    # 프론트는 holdings_summary.cash_usd 를 기반으로 표시하는데,
-    # 경제 데이터(환율)가 아직 없으면 fx=None 이 되어 cash_usd=None → 0처럼 보일 수 있다.
-    # 초기화 API는 "항상 시작 자금이 보이도록" cash_usd 를 반드시 숫자로 시드한다.
-    fx = _best_effort_usdkrw()
-    fx_source = "economic_and_stock_data" if fx else "fallback"
-    if not fx:
-        # 초기화 시에는 프론트와 동일한 기본값(1350)을 사용해 USD 추정치를 항상 채운다.
-        # 이후 장중/수동 sync로 KIS 기반 cash_usd가 갱신되면 그 값이 우선된다.
-        fx = 1350.0
-    cash_usd = float(initial_cash_krw) / float(fx)
-    summary["usdkrw_best_effort"] = fx
-    summary["usdkrw_source"] = fx_source
-    summary["initial_cash_usd_best_effort"] = cash_usd
+    # 2) 초기 자금 — KIS psamount에서 직접 조회 (USD + 환율)
+    cash_usd, exrt = _get_cash_usd_via_psamount_best_effort(ovrs_excg_cd="NASD")
+    summary["kis_cash_usd"] = cash_usd
+    summary["kis_usdkrw_exrt"] = exrt
 
-    try:
-        supabase.table("holdings_summary").upsert(
-            {
-                "id": "main",
-                "cash_usd": cash_usd,
-                "output2": {
-                    "initial_cash_krw": int(initial_cash_krw),
-                    "usdkrw_best_effort": fx,
-                    "usdkrw_source": fx_source,
-                },
-                "synced_at": datetime.now(timezone.utc).isoformat(),
-            },
-            on_conflict="id",
-        ).execute()
-        summary["holdings_summary_seeded"] = True
-    except Exception as e:
-        logger.warning("holdings_summary 초기 시드 실패: %s", e, exc_info=True)
+    if cash_usd is None or cash_usd <= 0:
+        logger.warning("KIS psamount 조회 실패 또는 잔고 0 — holdings_summary.cash_usd 시드 스킵")
         summary["holdings_summary_seeded"] = False
+    else:
+        try:
+            supabase.table("holdings_summary").upsert(
+                {
+                    "id": "main",
+                    "cash_usd": float(cash_usd),
+                    "initial_cash_usd": float(cash_usd),
+                    "output2": {
+                        "cash_source": "psamount",
+                        "usdkrw_exrt": exrt,
+                    },
+                    "synced_at": datetime.now(timezone.utc).isoformat(),
+                },
+                on_conflict="id",
+            ).execute()
+            summary["holdings_summary_seeded"] = True
+        except Exception as e:
+            logger.warning("holdings_summary 초기 시드 실패: %s", e, exc_info=True)
+            summary["holdings_summary_seeded"] = False
 
     # 3) 전체 성공 여부(테이블 삭제가 일부 실패해도 초기화는 계속되지만, 표시용으로 노출)
     delete_ok = all(bool(v.get("ok")) for v in deletions.values())

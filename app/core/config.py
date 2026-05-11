@@ -7,6 +7,7 @@
 
 # ─── 모듈 임포트 ───
 import os
+import unicodedata
 from pathlib import Path
 from typing import List
 
@@ -72,12 +73,6 @@ class Settings(BaseSettings):
     KIS_REAL_ACNT_PRDT_CD: str = Field(..., description="실전 계좌상품코드 뒤 2자리")
 
     KIS_USE_MOCK: bool = Field(..., description="true면 모의 블록, false면 실전 블록")
-
-    # ── 모의투자 초기화(리셋) ──────────────────────────────────────────────────
-    MOCK_INITIAL_CASH_KRW: int = Field(
-        ...,
-        description="모의투자 초기화 시 시작 자금(원화). (필수 env: MOCK_INITIAL_CASH_KRW)",
-    )
 
     SCHEDULE_AUTO_BUY_TIME: str = Field(..., description="자동 매수 실행 시간 (HH:MM, KST)")
     SCHEDULE_AUTO_SELL_INTERVAL_MIN: int = Field(..., description="자동 매도 체크 주기 (분)")
@@ -207,7 +202,7 @@ class Settings(BaseSettings):
     def predict_model_path(self) -> Path:
         """PREDICT_MODEL_DIR 를 프로젝트 루트 기준으로 해석 (절대경로 그대로 사용)."""
         root = Path(__file__).resolve().parents[2]
-        raw = (self.PREDICT_MODEL_DIR or "").strip()
+        raw = unicodedata.normalize("NFD", (self.PREDICT_MODEL_DIR or "").strip())
         if not raw:
             raise ValueError("PREDICT_MODEL_DIR 가 비어 있습니다. (.env 설정 필요)")
         p = Path(raw)

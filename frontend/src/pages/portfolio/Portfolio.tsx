@@ -2,17 +2,14 @@ import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
 import SortableTh from '../../components/SortableTh'
 import Tooltip from '../../components/Tooltip'
+import CurrencyToggle from '../../components/CurrencyToggle'
 import { useTableSort } from '../../hooks/useTableSort'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
+import { useCurrency } from '../../contexts/CurrencyContext'
+import { formatMoneyFromUsd } from '../../utils/money'
 import { fetchAllBalances, type KisHolding } from '../../api'
 import { tdBase, thColHead, tableScrollBox } from '../../components/gridTableStyles'
-
-function fmt(n: number | string | null | undefined, digits = 2) {
-  const v = typeof n === 'string' ? parseFloat(n) : n
-  if (v == null || isNaN(v as number)) return '—'
-  return (v as number).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
-}
 
 function toNum(s: string | undefined) {
   return parseFloat(s ?? '0') || 0
@@ -81,6 +78,7 @@ function SummaryCard({ title, value, color }: { title: string; value: string; co
 }
 
 export default function Portfolio() {
+  const currency = useCurrency()
   const { data, loading, error, refetch } = useApi(fetchAllBalances)
   const holdings: KisHolding[] = data?.output1 ?? []
   const rows = buildRows(holdings)
@@ -92,9 +90,12 @@ export default function Portfolio() {
 
   const { sortedRows, sortKey, sortDir, requestSort } = useTableSort(rows, rowAccessors)
 
+  const money = (usd: number, opts?: { sign?: 'auto' | 'always' | 'never' }) =>
+    formatMoneyFromUsd(usd, { unit: currency.unit, usdKrw: currency.usdKrw, digitsUsd: 2, digitsKrw: 0, sign: opts?.sign })
+
   return (
     <div style={{ padding: theme.pagePadding, fontFamily: theme.fontSans, minHeight: '100%' }}>
-      <PageHeader title="포트폴리오" subtitle="해외주식 보유 현황 · 나스닥/NYSE/AMEX" />
+      <PageHeader title="포트폴리오" subtitle="해외주식 보유 현황 · 나스닥/NYSE/AMEX" right={<CurrencyToggle />} />
 
       {error && (
         <div style={{ marginBottom: theme.gutter, padding: '12px 16px', borderRadius: theme.radiusMd, background: 'rgba(225,29,72,0.1)', color: theme.negative, fontSize: 14 }}>
@@ -104,11 +105,11 @@ export default function Portfolio() {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: theme.gutter, marginBottom: theme.gutter }}>
-        <SummaryCard title="평가 금액" value={loading ? '…' : `$${fmt(totalEval)}`} />
-        <SummaryCard title="매입 금액" value={loading ? '…' : `$${fmt(totalCost)}`} />
+        <SummaryCard title="평가 금액" value={loading ? '…' : money(totalEval)} />
+        <SummaryCard title="매입 금액" value={loading ? '…' : money(totalCost)} />
         <SummaryCard
           title="평가 손익"
-          value={loading ? '…' : `${totalPnl >= 0 ? '+' : ''}$${fmt(Math.abs(totalPnl))} (${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%)`}
+          value={loading ? '…' : `${money(totalPnl, { sign: 'auto' })} (${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct.toFixed(2)}%)`}
           color={totalPnl >= 0 ? theme.positive : theme.negative}
         />
         <SummaryCard title="보유 종목" value={loading ? '…' : `${rows.length}개`} />
@@ -123,9 +124,9 @@ export default function Portfolio() {
                   { id: 'symbol', label: '티커', align: 'left' as const },
                   { id: 'name', label: '종목명', align: 'left' as const },
                   { id: 'qty', label: '수량', align: 'right' as const, tip: '보유 주식 수 (주)' },
-                  { id: 'avgCost', label: '평단가', align: 'right' as const, tip: '매입 평균 단가 (USD)' },
-                  { id: 'price', label: '현재가', align: 'right' as const, tip: '현재 실시간 체결가 (USD)' },
-                  { id: 'evalAmt', label: '평가액', align: 'right' as const, tip: '현재가 × 수량 (USD)' },
+                  { id: 'avgCost', label: '평단가', align: 'right' as const, tip: `매입 평균 단가 (${currency.unit})` },
+                  { id: 'price', label: '현재가', align: 'right' as const, tip: `현재 실시간 체결가 (${currency.unit})` },
+                  { id: 'evalAmt', label: '평가액', align: 'right' as const, tip: `현재가 × 수량 (${currency.unit})` },
                   { id: 'pnlPct', label: '손익률', align: 'right' as const, tip: '(현재가 - 평단가) / 평단가 × 100' },
                   { id: 'weight', label: '비중', align: 'right' as const, tip: '총 포트폴리오 대비 해당 종목 비율' },
                 ].map(({ id, label, align, tip }) => (
@@ -146,9 +147,9 @@ export default function Portfolio() {
                   <td style={{ ...tdBase, fontWeight: 900 }}>{r.symbol}</td>
                   <td style={tdBase}>{r.name}</td>
                   <td style={{ ...tdBase, textAlign: 'right' }}>{r.qty.toFixed(0)}</td>
-                  <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(r.avgCost)}</td>
-                  <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(r.price)}</td>
-                  <td style={{ ...tdBase, textAlign: 'right' }}>${fmt(r.evalAmt)}</td>
+                  <td style={{ ...tdBase, textAlign: 'right' }}>{money(r.avgCost)}</td>
+                  <td style={{ ...tdBase, textAlign: 'right' }}>{money(r.price)}</td>
+                  <td style={{ ...tdBase, textAlign: 'right' }}>{money(r.evalAmt)}</td>
                   <td style={{ ...tdBase, textAlign: 'right', fontWeight: 900, color: r.pnlPct >= 0 ? theme.positive : theme.negative }}>
                     {r.pnlPct >= 0 ? '+' : ''}{r.pnlPct.toFixed(2)}%
                   </td>

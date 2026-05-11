@@ -12,9 +12,8 @@ export default function TradingInitializeAction() {
     const db = res?.db_reset ?? {}
     const del = db?.delete_status ?? {}
     const seedOk = Boolean(db?.seed_ok ?? db?.holdings_summary_seeded)
-    const cashUsd = db?.initial_cash_usd_best_effort ?? null
-    const fx = db?.usdkrw_best_effort ?? null
-    const fxSource = db?.usdkrw_source ?? null
+    const cashUsd = db?.kis_cash_usd ?? null
+    const fx = db?.kis_usdkrw_exrt ?? null
 
     const kis = res?.kis_reset ?? {}
     const kisAttempted = Boolean(res?.kis_attempted ?? kis?.attempted)
@@ -50,8 +49,8 @@ export default function TradingInitializeAction() {
     lines.push('')
     lines.push('[Seed (시작자금)]')
     lines.push(`- holdings_summary seed: ${seedOk ? '성공' : '실패'}`)
-    if (cashUsd != null) lines.push(`- cash_usd(best-effort): ${Number(cashUsd).toLocaleString('en-US')} USD`)
-    if (fx != null) lines.push(`- usdkrw(best-effort): ${Number(fx).toLocaleString('en-US')} (${fxSource ?? 'unknown'})`)
+    if (cashUsd != null) lines.push(`- KIS 시드 USD: $${Number(cashUsd).toLocaleString('en-US')}`)
+    if (fx != null) lines.push(`- KIS 환율(exrt): ${Number(fx).toLocaleString('en-US')} KRW/USD`)
 
     // 3) KIS reset 결과(장중에만 시도될 수 있음)
     lines.push('')

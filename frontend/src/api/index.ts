@@ -107,6 +107,8 @@ export interface KisOverseasBalance {
   }
   /** fetchAllBalances: 거래소별 output2 중 주문가능外화 추정 최댓값 */
   cashUsdBestEffort?: number
+  /** reset_trading_state_in_db 시점의 KIS 시드 USD (holdings_summary.initial_cash_usd) */
+  initialCashUsd?: number | null
 }
 
 export const fetchOverseasBalance = (exchange = 'NASD') =>

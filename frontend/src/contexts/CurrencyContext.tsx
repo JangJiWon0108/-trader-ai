@@ -15,7 +15,7 @@ type CurrencyContextValue = {
 const CurrencyContext = createContext<CurrencyContextValue | null>(null)
 
 export function CurrencyProvider({ children }: { children: ReactNode }) {
-  const [unit, setUnit] = useState<CurrencyUnit>('USD')
+  const [unit, setUnit] = useState<CurrencyUnit>('KRW')
   const rate = useUsdKrwRate({ refreshMs: 5 * 60_000, initialRate: 1350 })
 
   const value = useMemo<CurrencyContextValue>(

@@ -1,9 +1,12 @@
 import Card from '../../components/Card'
 import PageHeader from '../../components/PageHeader'
 import SortableTh from '../../components/SortableTh'
+import CurrencyToggle from '../../components/CurrencyToggle'
 import { useTableSort } from '../../hooks/useTableSort'
 import { theme } from '../../theme'
 import { useApi } from '../../hooks/useApi'
+import { useCurrency } from '../../contexts/CurrencyContext'
+import { formatMoneyFromUsd } from '../../utils/money'
 import { fetchOrderHistory, type OrderHistoryItem } from '../../api'
 import { tdBase, thColHead, tableScrollBox, monoFont } from '../../components/gridTableStyles'
 import { formatKstDateTime } from '../../utils/time'
@@ -49,7 +52,11 @@ const hAccessors: Record<string, (r: HistoryRow) => string | number> = {
 }
 
 export default function Orders() {
+  const currency = useCurrency()
   const history = useApi(fetchOrderHistory)
+
+  const money = (usd: number | null | undefined) =>
+    formatMoneyFromUsd(usd, { unit: currency.unit, usdKrw: currency.usdKrw, digitsUsd: 2, digitsKrw: 0 })
 
   const hRows = buildHistoryRows(history.data?.items ?? [])
 
@@ -61,7 +68,7 @@ export default function Orders() {
 
   return (
     <div style={{ padding: theme.pagePadding, fontFamily: theme.fontSans, minHeight: '100%' }}>
-      <PageHeader title="주문 내역" subtitle="매수·매도 히스토리" />
+      <PageHeader title="주문 내역" subtitle="매수·매도 히스토리" right={<CurrencyToggle size="sm" />} />
 
       <div style={{ display: 'flex', gap: 8, marginBottom: theme.gutter, flexWrap: 'wrap', alignItems: 'center' }}>
         <span style={{ marginLeft: 'auto', fontSize: 12, color: theme.onSurfaceVariant }}>
@@ -80,7 +87,7 @@ export default function Orders() {
                   { id: 'ticker', label: '티커' },
                   { id: 'stock_name', label: '종목명' },
                   { id: 'quantity', label: '수량', right: true },
-                  { id: 'limit_price', label: '주문가', right: true },
+                  { id: 'limit_price', label: `주문가 (${currency.unit})`, right: true },
                   { id: '_accuracy', label: '정확도', right: true, tip: '모델 백테스트 예측 정확도 (%)' },
                   { id: '_riseProb', label: '상승확률', right: true, tip: 'AI 모델 예측 상승 확률 (%)' },
                   { id: '_reason', label: '사유', tip: '매수/매도 근거 요약' },
@@ -119,7 +126,7 @@ export default function Orders() {
                     <td style={{ ...tdBase, fontWeight: 800 }}>{o.ticker ?? '—'}</td>
                     <td style={{ ...tdBase, fontSize: 12 }}>{o.stock_name ?? '—'}</td>
                     <td style={{ ...tdBase, textAlign: 'right' }}>{o.quantity ?? '—'}</td>
-                    <td style={{ ...tdBase, textAlign: 'right' }}>{o.limit_price != null ? `$${Number(o.limit_price).toFixed(2)}` : '—'}</td>
+                    <td style={{ ...tdBase, textAlign: 'right' }}>{o.limit_price != null ? money(Number(o.limit_price)) : '—'}</td>
                     <td style={{ ...tdBase, textAlign: 'right' }}>{o._accuracy != null ? `${o._accuracy.toFixed(1)}%` : '—'}</td>
                     <td style={{ ...tdBase, textAlign: 'right' }}>{o._riseProb != null ? `${o._riseProb.toFixed(1)}%` : '—'}</td>
                     <td style={{ ...tdBase, fontSize: 12, color: theme.onSurfaceVariant, maxWidth: 360, whiteSpace: 'normal' }}>{o._reason}</td>

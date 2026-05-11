@@ -211,12 +211,21 @@ export default function Dashboard() {
 
   const holdings: KisHolding[] = balance.data?.output1 ?? []
   const cashUsd = balance.data?.cashUsdBestEffort ?? 0
+  // KIS 기준 시드 USD (reset_trading_state_in_db 시점 psamount)
+  const seedUsd: number | null = balance.data?.initialCashUsd ?? null
 
   const totalCost = holdings.reduce((s, h) => s + lineCostUsd(h), 0)
   const totalEval = holdings.reduce((s, h) => s + lineEvalUsd(h), 0)
   const totalPnl = holdings.reduce((s, h) => s + linePnlUsd(h), 0)
   const totalPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
   const totalAssets = totalEval + (cashUsd > 0 ? cashUsd : 0)
+
+  // 시드 기준 수익률: 총 자산(USD) vs KIS 시드(USD), KRW 표시는 환율 환산
+  const usdKrw = currency.usdKrw
+  const seedReturnPct = seedUsd && seedUsd > 0 ? ((totalAssets - seedUsd) / seedUsd) * 100 : null
+  const seedPnlUsd = seedUsd && seedUsd > 0 ? totalAssets - seedUsd : null
+  const seedPnlKrw = seedPnlUsd != null && usdKrw && usdKrw > 0 ? seedPnlUsd * usdKrw : null
+  const seedKrw = seedUsd != null && usdKrw && usdKrw > 0 ? seedUsd * usdKrw : null
 
   const tickers = holdings.map((h) => h.ovrs_pdno).filter(Boolean)
   const winStats = useMemo(() => {
@@ -361,7 +370,7 @@ export default function Dashboard() {
           title={
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
               <Tooltip tip="보유 종목의 매입(증권사 매입합계, 비어 있으면 평단×수량) 대비 평가금액(현재가×수량) 손익률입니다.">
-                총 수익률 (%)
+                보유종목 수익률 (%)
               </Tooltip>
               <button
                 type="button"
@@ -398,6 +407,41 @@ export default function Dashboard() {
               </div>
               <div style={{ marginTop: 8, fontSize: 12, color: theme.onSurfaceVariant }}>
                 평가손익 {money(totalPnl, { digitsUsd: 2, digitsKrw: 0, sign: 'auto' })}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 11, color: theme.onSurfaceVariant }}>
+                보유 종목 기준 (매입가 대비)
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <Card title={<Tooltip tip="KIS 초기 시드(psamount 기준) 대비 현재 총 자산(보유주식+현금) 수익률">시드 기준 수익률 (%)</Tooltip>}>
+          <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+            <div>
+              <div
+                style={{
+                  fontSize: 28,
+                  fontWeight: 800,
+                  fontVariantNumeric: 'tabular-nums',
+                  color: seedReturnPct == null ? theme.onSurfaceVariant : seedReturnPct >= 0 ? theme.positive : theme.negative,
+                  fontFamily: theme.fontDisplay,
+                }}
+              >
+                {balance.loading ? '…' : seedReturnPct == null ? '—' : fmtPct(seedReturnPct)}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12, color: theme.onSurfaceVariant }}>
+                {seedPnlUsd != null
+                  ? currency.unit === 'KRW' && seedPnlKrw != null
+                    ? `손익 ${seedPnlKrw >= 0 ? '+' : ''}₩${Math.round(seedPnlKrw).toLocaleString('ko-KR')}`
+                    : `손익 ${seedPnlUsd >= 0 ? '+' : ''}$${seedPnlUsd.toFixed(2)}`
+                  : '시드 미설정 (초기화 필요)'}
+              </div>
+              <div style={{ marginTop: 4, fontSize: 11, color: theme.onSurfaceVariant }}>
+                {seedUsd != null
+                  ? currency.unit === 'KRW' && seedKrw != null
+                    ? `시드 ₩${Math.round(seedKrw).toLocaleString('ko-KR')} (KIS 기준)`
+                    : `시드 $${seedUsd.toLocaleString('en-US', { maximumFractionDigits: 0 })} (KIS 기준)`
+                  : '초기화 후 자동 설정'}
               </div>
             </div>
           </div>
