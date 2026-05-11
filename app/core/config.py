@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_KEY: str = Field(..., description="Supabase service role key")
 
     # 추론(run_inference 등): model_meta.json·keras·스케일러가 있는 디렉터리
-    # 프로젝트 루트 기준 상대경로 또는 절대경로 (예: predict_model/model/v2_260510)
+    # 프로젝트 루트 기준 상대경로 또는 절대경로 (예: predict_model/model/v7_260511_최근30일_validation_주기5일)
     PREDICT_MODEL_DIR: str = Field(
         ...,
         description="Transformer 추론 모델 디렉터리",

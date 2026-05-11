@@ -91,6 +91,6 @@
     "미국 리츠 ETF"
   ],
   "lookback": 90,
-  "forecast_horizon": 14,
+  "forecast_horizon": 5,
   "test_mode": false
 }

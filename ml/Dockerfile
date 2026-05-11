@@ -9,8 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TZ=Asia/Seoul
 
-# 이미지 내 기본 모델 경로 (Cloud Run env 로 덮어쓸 수 있음)
-ENV PREDICT_MODEL_DIR=predict_model/model/v4_260505_최근30일_validation
+# 모델 실경로는 COPY 직후 RUN 에서 predict_model/model/bundled 로 고정(한글·NFD 이슈 방지).
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -23,10 +22,30 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock ./
 
 RUN python -m pip install --no-cache-dir uv \
-    && UV_CACHE_DIR=/tmp/uv-cache uv sync --frozen --no-dev \
+    && UV_CACHE_DIR=/tmp/uv-cache uv sync --frozen --no-dev --group ml \
     && rm -rf /tmp/uv-cache /root/.cache/uv
 
 COPY . .
+
+# 한글 디렉터리명·호스트 NFD vs 리눅스 NFC 불일치로 model_meta.json 을 못 찾는 문제 방지:
+# predict_model/model 아래 v7_* 중 model_meta.json 이 있는 디렉터리를 ASCII 경로로 복사한다.
+RUN set -eux; \
+    found=""; \
+    for d in /app/predict_model/model/v7_*/; do \
+      [ -d "$d" ] || continue; \
+      d="${d%/}"; \
+      if [ -f "$d/model_meta.json" ]; then found="$d"; break; fi; \
+    done; \
+    if [ -z "$found" ]; then \
+      echo "ERROR: predict_model/model 아래 v7_* 모델( model_meta.json 포함 )이 없습니다." >&2; \
+      ls -la /app/predict_model/model 2>/dev/null || echo "(predict_model/model 없음)" >&2; \
+      exit 1; \
+    fi; \
+    rm -rf /app/predict_model/model/bundled; \
+    mkdir -p /app/predict_model/model/bundled; \
+    cp -a "$found"/. /app/predict_model/model/bundled/
+
+ENV PREDICT_MODEL_DIR=predict_model/model/bundled
 
 EXPOSE 8080
 

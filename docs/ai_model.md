@@ -164,7 +164,7 @@
 
 학습 1회 완료 시, 모델 디렉토리에 아래 산출물을 저장한다(버전 경로는 실행 환경에 따라 다름).
 
-예: `predict_model/model/v4_260505_최근30일_validation/`
+예: `predict_model/model/v7_260511_최근30일_validation_주기5일/`
 
 - **모델 파일**: `best_checkpoint.keras` 또는 `*.keras`
 - **스케일러**:

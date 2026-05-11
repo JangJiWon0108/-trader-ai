@@ -4,7 +4,7 @@
   uv run python predict_model/predict/run_inference.py
 
 모델 경로: .env 의 PREDICT_MODEL_DIR → app.core.config.settings.predict_model_path 와 동일.
-  예: PREDICT_MODEL_DIR=predict_model/model/v2_260510
+  예: PREDICT_MODEL_DIR=predict_model/model/v7_260511_최근30일_validation_주기5일
   CLI --model-dir 가 있으면 env 보다 우선합니다.
 
 환경 변수: SUPABASE_URL, SUPABASE_SERVICE_KEY(권장) 또는 SUPABASE_KEY
